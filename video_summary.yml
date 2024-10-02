@@ -1,0 +1,13 @@
+video_dir: "./vids"
+videos:
+  - filename: "SHORT - NS Arr 20240310.mov"
+    title: "North Springs Arriving"
+    description: >
+      10 March 2024
+      
+      Some text
+      
+      #atl #atlanta #marta #transit #trains
+    categoryId: "19"
+    keywords: "atl,atlanta,marta,transit,trains"
+    privacyStatus: "public"
