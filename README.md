@@ -74,19 +74,19 @@ video files. If you don't declare on here, the script looks in the current direc
 The `videos` section is the bread-and-butter. This is where the video file locations and snippets &
 statuses are declared. There's no checking here at the moment, so all the directives listed are
 required.
-
-> video_dir: PATH TO THE VIDEOS  ** OPTIONAL, default to PWD
-> videos:
->   - filename: YOUR FILE.MOV
->     title: "THE TITLE OF YOUR VIDEO"
->     description: "THE DESCRIPTION TEXT"
->     categoryId: "YOUTUBE CATEGORY ID"  ** Use "22" if you don't care which one it is
->     keywords: "CSV LIST OF TAGS"
->     privacyStatus: "PRIVACY" ** "public", "private", or "unlisted"
->   - filename: ANOTHER FILE.MOV
-> ...
->   - filename: YET ANOTHER FILE.MOV
-> ...
-
+```
+video_dir: PATH TO THE VIDEOS  ** OPTIONAL, default to PWD
+videos:
+  - filename: YOUR FILE.MOV
+    title: "THE TITLE OF YOUR VIDEO"
+    description: "THE DESCRIPTION TEXT"
+    categoryId: "YOUTUBE CATEGORY ID"  ** Use "22" if you don't care which one it is
+    keywords: "CSV LIST OF TAGS"
+    privacyStatus: "PRIVACY" ** "public", "private", or "unlisted"
+  - filename: ANOTHER FILE.MOV
+...
+  - filename: YET ANOTHER FILE.MOV
+...
+```
 
 
