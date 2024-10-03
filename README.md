@@ -66,7 +66,8 @@ OATH2 should be working.
 
 ### `video_summary.yml`
 
-This file declares what videos needs to be uploaded and with what characteristics they have.
+This file declares what videos needs to be uploaded and with what characteristics they have. There is
+a sample file included in the repo.
 
 There is an optional `video_dir` at the top of the structure to tell the script where to look for the
 video files. If you don't declare on here, the script looks in the current directory.
@@ -74,19 +75,52 @@ video files. If you don't declare on here, the script looks in the current direc
 The `videos` section is the bread-and-butter. This is where the video file locations and snippets &
 statuses are declared. There's no checking here at the moment, so all the directives listed are
 required.
+
 ```
 video_dir: PATH TO THE VIDEOS  ** OPTIONAL, default to PWD
 videos:
-  - filename: YOUR FILE.MOV
-    title: "THE TITLE OF YOUR VIDEO"
-    description: "THE DESCRIPTION TEXT"
-    categoryId: "YOUTUBE CATEGORY ID"  ** Use "22" if you don't care which one it is
-    keywords: "CSV LIST OF TAGS"
-    privacyStatus: "PRIVACY" ** "public", "private", or "unlisted"
-  - filename: ANOTHER FILE.MOV
+  - filename: "<YOUR FILE.MOV>"
+    title: "<THE TITLE OF YOUR VIDEO>"
+    description: "<THE DESCRIPTION TEXT>"
+    categoryId: "<YOUTUBE CATEGORY ID>"  ** Use "22" if you don't care which one it is
+    keywords: "<CSV LIST OF TAGS>"
+    privacyStatus: "<PRIVACY SETTING>" ** "public", "private", or "unlisted"
+  - filename: "<ANOTHER FILE.MOV>"
 ...
-  - filename: YET ANOTHER FILE.MOV
+  - filename: "<YET ANOTHER FILE.MOV>"
 ...
 ```
+
+## Running the Script
+
+As with all Python-based anything, I suggest using a virtual environment. That's beyond the scope
+here.
+
+Running it is the easiest thing you'll do today.
+
+> python aaron_upload.py
+
+A couple things will happen.
+
+First, the client will use the info in the `client_secrets.json` file to authenticate against the
+YouTube authentication server. This is what you signed up for above. A browser windo will pop up
+asking you to authenticate to YouTube. Use the same credentials you did to sign up for OAuth2 abvoe.
+
+When all goes well, the authentication server will provide an access token. This access token is stored
+in a file called `aaron_uploader.py-oauth2.json`. This is what's being used to identify the client 
+to the resource server. This file is generated automatically.
+
+Now that the client is fully authenticated and authorized, the uploads carry on. The response is printed
+to screen when the upload finishes so you can see what it did. This is obviously begging to be put in
+some sort of summary or sent to another process to do other stuff like putting the videos into a playlist.
+
+## Quotas
+
+YouTube has quotas on the queries, and you get 10,000 credits as a test project. That sounds like a lot, 
+but the measure isn't per transaction or per connection. Each query type has a different value, and,
+as you guessed, the good ones are expensive. For example, uploading a video cost 1600 credits!
+
+See [this page](https://developers.google.com/youtube/v3/determine_quota_cost) for the full credit cost list.
+
 
 
