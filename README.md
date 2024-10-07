@@ -62,7 +62,12 @@ can use the APIs.
 
 OATH2 should be working.
 
-## YAML Files
+## The Uploader
+
+As with all Python-based anything, I suggest using a virtual environment. That's beyond the scope
+here.
+
+First, you need to set up your YAML file.
 
 ### `video_summary.yml`
 
@@ -91,26 +96,83 @@ videos:
 ...
 ```
 
-## Running the Script
-
-As with all Python-based anything, I suggest using a virtual environment. That's beyond the scope
-here.
+### Running the Uploader
 
 Running it is the easiest thing you'll do today.
 
 > python aaron_upload.py
 
+This script is very expensive [from a quota standpoint](#Quotas). Like very. A
+
 A couple things will happen.
 
 First, the client will use the info in the `client_secrets.json` file to authenticate against the
-YouTube authentication server. This is what you signed up for above. A browser windo will pop up
-asking you to authenticate to YouTube. Use the same credentials you did to sign up for OAuth2 abvoe.
+YouTube authentication server. This is what you signed up for above. A browser window will pop up
+asking you to authenticate to YouTube. Use the same credentials you used to sign up for OAuth2 above.
 
 When all goes well, the authentication server will provide an access token. This access token is stored
 in a file called `aaron_uploader.py-oauth2.json`. This is what's being used to identify the client 
 to the resource server. This file is generated automatically.
 
 Now that the client is fully authenticated and authorized, the uploads carry on. The response is printed
+to screen when the upload finishes so you can see what it did. This is obviously begging to be put in
+some sort of summary or sent to another process to do other stuff like putting the videos into a playlist.
+
+## The Updater
+
+As with all Python-based anything, I suggest using a virtual environment. That's beyond the scope
+here.
+
+This script will update the details of an already-uploaded video. It is much cheaper to run [from a quota standpoint](#Quotas)
+than uploading a video from the API (like 50 points versus 1600!), so it's an option for systematically
+publishing your videos. I've been uploading videos via the YouTube page or app and using this guy
+to set the title, description, tags, and, most importantly to me, the publish date and time.
+
+Set up the YAML file before you get started.
+
+### `draft_videos.yml`
+
+This file declares what videos needs to be updated with what characteristics. There is
+a sample file included in the repo.
+
+The `videos` section is the bread-and-butter. This is where the URL of the video and snippets &
+statuses are declared. There's no checking here at the moment, so all the directives listed are
+required.
+
+```commandline
+videos:
+  - url: "<THE URL OF THE VIDEO>"
+    title: "<THE TITLE OF YOUR VIDEO>"
+    description: "<THE DESCRIPTION TEXT>"
+    categoryId: "<YOUTUBE CATEGORY ID>"  ** Use "22" if you don't care which one it is
+    keywords: "<CSV LIST OF TAGS>"
+    publishAt: "<THE DATE TO PUBLISH THE VIDEO IN '%Y-%m-%d %H:%M:%S' format>"
+  - filename: "<ANOTHER URL>"
+  ...
+  - filename: "<ANOTHER URL>"
+  ...
+```
+
+*A Note about the Date and Time*: The script will take care of that whole timezone thing, so just set the
+`publishAt` based on your local date and time. 
+
+### Running the Updater
+
+Just run the script.
+
+> python draft_updater.py
+
+A couple things will happen.
+
+First, the client will use the info in the `client_secrets.json` file to authenticate against the
+YouTube authentication server. This is what you signed up for above. A browser window will pop up
+asking you to authenticate to YouTube. Use the same credentials you used to sign up for OAuth2 above.
+
+When all goes well, the authentication server will provide an access token. This access token is stored
+in a file called `draft_updater.py-oauth2.json`. This is what's being used to identify the client 
+to the resource server. This file is generated automatically.
+
+Now that the client is fully authenticated and authorized, the updates carry on. The response is printed
 to screen when the upload finishes so you can see what it did. This is obviously begging to be put in
 some sort of summary or sent to another process to do other stuff like putting the videos into a playlist.
 
