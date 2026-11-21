@@ -86,6 +86,7 @@ videos:
     publishAt: "2026-11-22 13:00"    # optional, your local time; keeps it private until then
     recordingDate: 2026-05-20        # optional
     madeForKids: false               # optional, default false
+    thumbnail: "my clip thumb.jpg"   # optional .jpg/.png, relative to video_dir
 ```
 
 Then:
@@ -106,6 +107,13 @@ What it does:
   can just be rerun. `--force` uploads a file again anyway.
 - **Keeps going when one video fails**, and reports the totals at the end. Errors that will hit every
   remaining video (out of quota, upload limit) stop the run.
+- **Sets thumbnails after processing.** YouTube only accepts a thumbnail once the video has finished
+  processing, so the uploader uploads everything first, then waits (up to 15 minutes; change it
+  with `--thumbnail-wait SECONDS`) and sets each thumbnail. If one isn't set in time, or fails, the
+  upload still counts; the log records why, and the next run retries just the thumbnail.
+  Custom thumbnails need a [verified channel](https://www.youtube.com/verify).
+
+The Shorts "Related video" link isn't available in the YouTube API, so set that in Studio.
 
 **Unaudited projects:** Google locks videos uploaded through an API project that hasn't passed the
 [YouTube API audit](https://support.google.com/youtube/contact/yt_api_form) to private, whatever
@@ -131,6 +139,7 @@ videos:
     publishAt: "2026-11-25 13:00"   # your local time; video must not be published yet
     privacyStatus: "unlisted"       # don't combine with publishAt
     recordingDate: 2026-05-20
+    thumbnail: "thumbs/new.jpg"     # .jpg/.png, relative to this YAML file
 ```
 
 ```
@@ -151,8 +160,11 @@ You get 10,000 units a day for most calls, and uploads have their own limit of 1
 | Upload a video (`videos.insert`) | 1 unit, max 100 uploads a day |
 | Read a video's details (`videos.list`) | 1 unit |
 | Update a video (`videos.update`) | 50 units |
+| Set a thumbnail (`thumbnails.set`) | 50 units |
 
-So the updater costs 51 units per video and the uploader costs 1 per video. See
+So the uploader costs 1 unit per video, plus about 51 for a thumbnail (a few 1-unit checks while
+it waits for processing, then the thumbnail). The updater costs 51 units per video, plus 50 for a
+thumbnail. See
 [this page](https://developers.google.com/youtube/v3/determine_quota_cost) for the full list.
 
 # Tests

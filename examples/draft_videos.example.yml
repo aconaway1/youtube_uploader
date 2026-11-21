@@ -9,6 +9,7 @@ videos:
       #gbb #galesburg
     keywords: "BNSF, Galesburg"
     publishAt: "2026-11-25 13:00"   # local time; schedules it (video stays private until then)
+    thumbnail: "thumbs/new.jpg"     # .jpg/.png, relative to this file
 
   - url: "https://youtu.be/VIDEO_ID?si=share-param-is-fine"
     title: "Only the title changes on this one"

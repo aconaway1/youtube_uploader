@@ -111,7 +111,12 @@ def build_job(vid, video_dir):
         except ValueError as e:
             problems.append(str(e))
 
-    return {"path": path, "filename": str(filename), "body": body}, problems
+    thumbnail = None
+    if vid.get("thumbnail"):
+        thumbnail = yt.resolve_path(vid["thumbnail"], video_dir)
+        yt.check_thumbnail(thumbnail, problems)
+
+    return {"path": path, "filename": str(filename), "body": body, "thumbnail": thumbnail}, problems
 
 
 def upload(youtube, job):
@@ -122,6 +127,47 @@ def upload(youtube, job):
         media_body=MediaFileUpload(job["path"], chunksize=-1, resumable=True),
     )
     return yt.resumable_upload(request)
+
+
+def apply_thumbnails(youtube, items, log, log_path, timeout):
+    """items: [(job, video_id)]. Waits for processing, then sets each thumbnail.
+
+    Records the outcome in the upload log as thumbnail_status. Returns the
+    number that weren't set.
+    """
+    if not items:
+        return 0
+    print(f"\nThumbnails: {len(items)} to set once processing finishes "
+          f"(waiting up to {timeout // 60} min)")
+    try:
+        statuses = yt.wait_for_processing(youtube, [vid for _, vid in items], timeout)
+    except HttpError as e:
+        statuses = {}
+        print(f"  couldn't check processing status: HTTP {e.resp.status} {yt.http_error_reason(e)}")
+
+    not_set = 0
+    for job, video_id in items:
+        state = statuses.get(video_id, "unknown")
+        entry = log[log_key(job["path"])]
+        entry["thumbnail"] = job["thumbnail"]
+        if state != "succeeded":
+            if state in ("failed", "terminated"):
+                entry["thumbnail_status"] = f"failed: video processing {state}"
+            else:
+                entry["thumbnail_status"] = "pending: video still processing"
+            print(f"  {job['filename']}: not set ({entry['thumbnail_status']}); rerun to retry")
+            not_set += 1
+        else:
+            try:
+                yt.set_thumbnail(youtube, video_id, job["thumbnail"])
+                entry["thumbnail_status"] = "set"
+                print(f"  {job['filename']}: thumbnail set")
+            except HttpError as e:
+                entry["thumbnail_status"] = "failed: " + yt.thumbnail_error_message(e)
+                print(f"  {job['filename']}: {entry['thumbnail_status']}")
+                not_set += 1
+        save_log(log_path, log)
+    return not_set
 
 
 # --------------------------------------------------------------------------
@@ -136,6 +182,9 @@ def main(argv=None, youtube=None):
     parser.add_argument("--dry-run", action="store_true", help="validate the file and stop")
     parser.add_argument("--force", action="store_true",
                         help="upload even if the upload log says a file already went up")
+    parser.add_argument("--thumbnail-wait", type=int, default=900, metavar="SECONDS",
+                        help="how long to wait for processing before setting thumbnails "
+                             "(default 900)")
     args = parser.parse_args(argv)
 
     data = yt.load_yaml(args.vids)
@@ -159,12 +208,15 @@ def main(argv=None, youtube=None):
         return 2
 
     log = load_log(args.log)
-    todo = []
+    todo, thumbs = [], []  # thumbs: [(job, video_id)] still needing a thumbnail
     for job in jobs:
         prev = log.get(log_key(job["path"]))
         if prev and not args.force:
             print(f"SKIP {job['filename']}: already uploaded as {prev['video_id']} "
                   f"on {prev['uploaded_at']} (use --force to upload again)")
+            if job["thumbnail"] and prev.get("thumbnail_status") != "set":
+                print("     thumbnail not set yet; will retry it")
+                thumbs.append((job, prev["video_id"]))
         else:
             todo.append(job)
 
@@ -172,11 +224,13 @@ def main(argv=None, youtube=None):
         for job in todo:
             s = job["body"]["status"]
             when = f", publishes {s['publishAt']}" if "publishAt" in s else ""
+            thumb = ", + thumbnail" if job["thumbnail"] else ""
             print(f"OK   {job['filename']}: \"{job['body']['snippet']['title']}\" "
-                  f"({s['privacyStatus']}{when})")
-        print(f"\nDry run: {len(todo)} to upload, nothing sent.")
+                  f"({s['privacyStatus']}{when}{thumb})")
+        print(f"\nDry run: {len(todo)} to upload, "
+              f"{len(thumbs)} thumbnail retr{'y' if len(thumbs) == 1 else 'ies'}, nothing sent.")
         return 0
-    if not todo:
+    if not todo and not thumbs:
         print("Nothing to upload.")
         return 0
 
@@ -210,11 +264,18 @@ def main(argv=None, youtube=None):
         save_log(args.log, log)
         done.append(job)
         print(f"  Uploaded: https://youtu.be/{video_id}")
+        if job["thumbnail"]:
+            thumbs.append((job, video_id))
+
+    thumbs_not_set = apply_thumbnails(youtube, thumbs, log, args.log, args.thumbnail_wait)
 
     remaining = len(todo) - len(done) - len(failed)
-    print(f"\n{len(done)} uploaded, {len(failed)} failed"
-          + (f", {remaining} not attempted" if remaining else "") + ".")
-    return 1 if failed or remaining else 0
+    summary = (f"\n{len(done)} uploaded, {len(failed)} failed"
+               + (f", {remaining} not attempted" if remaining else ""))
+    if thumbs:
+        summary += f"; {len(thumbs) - thumbs_not_set} of {len(thumbs)} thumbnails set"
+    print(summary + ".")
+    return 1 if failed or remaining or thumbs_not_set else 0
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 Version 0.3
 
+- Thumbnails: optional `thumbnail:` in both YAML files. The uploader sets them
+  after processing finishes and retries unset ones on the next run
 - Switched from the deprecated oauth2client to google-auth; removed the unrelated
   `apiclient` package and unused `pycurl`/`http-client` from requirements
 - One shared sign-in (`token.json`) for both scripts; expired Testing-mode sign-ins

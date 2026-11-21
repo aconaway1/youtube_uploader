@@ -245,6 +245,81 @@ def check_text(field, text, problems, max_chars=None, max_bytes=None):
         problems.append(f"{field} is {len(text.encode('utf-8'))} bytes (max {max_bytes})")
 
 
+# --------------------------------------------------------------------------
+# Thumbnails
+# --------------------------------------------------------------------------
+
+THUMBNAIL_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+MAX_THUMBNAIL_BYTES = 50 * 1024 * 1024
+
+
+def resolve_path(value, base_dir):
+    """Expand ~ and make a relative path relative to base_dir."""
+    p = os.path.expanduser(str(value))
+    return p if os.path.isabs(p) else os.path.join(base_dir, p)
+
+
+def check_thumbnail(path, problems):
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in THUMBNAIL_TYPES:
+        problems.append(f"thumbnail must be .jpg or .png: {path}")
+    elif not os.path.isfile(path):
+        problems.append(f"thumbnail not found: {path}")
+    elif os.path.getsize(path) > MAX_THUMBNAIL_BYTES:
+        problems.append(f"thumbnail is over 50 MB: {path}")
+
+
+def set_thumbnail(youtube, video_id, path):
+    """thumbnails.set (about 50 quota units). Raises HttpError on failure."""
+    from googleapiclient.http import MediaFileUpload
+    media = MediaFileUpload(path, mimetype=THUMBNAIL_TYPES[os.path.splitext(path)[1].lower()])
+    return youtube.thumbnails().set(videoId=video_id, media_body=media).execute(num_retries=3)
+
+
+def thumbnail_error_message(e):
+    reason = http_error_reason(e)
+    if e.resp.status == 403:
+        return ("not allowed (403). Custom thumbnails need a verified channel: "
+                "check youtube.com/verify, then retry with draft_updater.py")
+    if reason == "uploadRateLimitExceeded":
+        return "too many thumbnails uploaded recently (429); retry later with draft_updater.py"
+    if reason == "invalidImage":
+        return "YouTube rejected the image (invalidImage)"
+    return f"HTTP {e.resp.status} {reason}".strip()
+
+
+def processing_status(youtube, video_ids):
+    """{video_id: 'processing' | 'succeeded' | 'failed' | 'terminated' | 'missing'}"""
+    found = {}
+    ids = list(video_ids)
+    for i in range(0, len(ids), 50):
+        resp = youtube.videos().list(part="processingDetails",
+                                     id=",".join(ids[i:i + 50])).execute()
+        for item in resp.get("items", []):
+            found[item["id"]] = item.get("processingDetails", {}).get("processingStatus", "processing")
+    return {v: found.get(v, "missing") for v in ids}
+
+
+def wait_for_processing(youtube, video_ids, timeout, interval=20, sleep=None, clock=None):
+    """Poll until every video has finished processing or the timeout passes.
+
+    Costs 1 quota unit per poll for up to 50 videos. Returns the last status map.
+    """
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    deadline = clock() + timeout
+    pending = set(video_ids)
+    statuses = {}
+    while pending:
+        statuses.update(processing_status(youtube, sorted(pending)))
+        pending = {v for v in pending if statuses[v] in ("processing", "missing")}
+        if not pending or clock() >= deadline:
+            break
+        print(f"  waiting for YouTube to finish processing {len(pending)} video(s)...")
+        sleep(interval)
+    return statuses
+
+
 def check_tags(tags, problems):
     n = tags_length(tags)
     if n > MAX_TAGS_CHARS:

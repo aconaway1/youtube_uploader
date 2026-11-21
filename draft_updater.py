@@ -8,10 +8,12 @@ settings) stays as it is.
     python draft_updater.py --vids edits.yml
     python draft_updater.py --dry-run           # show changes, don't save them
 
-Each video costs 51 quota units (1 to read it, 50 to update it).
+Each video costs 51 quota units (1 to read it, 50 to update it), plus 50
+for a thumbnail.
 """
 import argparse
 import copy
+import os
 import sys
 
 from googleapiclient.errors import HttpError
@@ -28,7 +30,7 @@ WRITABLE_STATUS = ("privacyStatus", "embeddable", "license", "publicStatsViewabl
                    "publishAt", "selfDeclaredMadeForKids", "containsSyntheticMedia")
 
 
-def parse_changes(vid):
+def parse_changes(vid, base_dir="."):
     """Validate one YAML entry. Returns (video_id, changes, problems)."""
     problems = []
     if not isinstance(vid, dict):
@@ -82,8 +84,13 @@ def parse_changes(vid):
             problems.append(str(e))
 
     changes = {part: fields for part, fields in changes.items() if fields}
+    if vid.get("thumbnail"):
+        # Not a videos.update part; main() sends it with thumbnails.set.
+        changes["thumbnail"] = yt.resolve_path(vid["thumbnail"], base_dir)
+        yt.check_thumbnail(changes["thumbnail"], problems)
     if not changes and not problems:
-        problems.append("nothing to change (give title, description, keywords, publishAt, ...)")
+        problems.append("nothing to change (give title, description, keywords, publishAt, "
+                        "thumbnail, ...)")
     return video_id, changes, problems
 
 
@@ -134,9 +141,10 @@ def main(argv=None, youtube=None):
     args = parser.parse_args(argv)
 
     data = yt.load_yaml(args.vids)
+    base_dir = os.path.dirname(os.path.abspath(args.vids))
     jobs, bad = [], 0
     for i, vid in enumerate(data["videos"], 1):
-        video_id, changes, problems = parse_changes(vid)
+        video_id, changes, problems = parse_changes(vid, base_dir)
         label = video_id or f"entry {i}"
         for p in problems:
             print(f"ERROR {label}: {p}")
@@ -152,19 +160,40 @@ def main(argv=None, youtube=None):
     updated, failed = 0, 0
     for n, (video_id, changes) in enumerate(jobs, 1):
         print(f"[{n}/{len(jobs)}] {video_id}")
+        changes = dict(changes)
+        thumbnail = changes.pop("thumbnail", None)
         try:
-            found = youtube.videos().list(part="snippet,status,recordingDetails",
+            found = youtube.videos().list(part="snippet,status,recordingDetails,processingDetails",
                                           id=video_id).execute().get("items", [])
             if not found:
                 print("  FAILED: no video with that ID on this channel/account")
                 failed += 1
                 continue
             current = found[0]
-            body, parts = merge(current, changes)
-            print("\n".join(describe(current, body)))
+            body = parts = None
+            if changes:
+                body, parts = merge(current, changes)
+                print("\n".join(describe(current, body)))
+            processing = current.get("processingDetails", {}).get("processingStatus", "succeeded")
+            if thumbnail:
+                print(f"    thumbnail -> {thumbnail}")
+                if processing != "succeeded":
+                    print(f"  FAILED: video processing is '{processing}'; "
+                          "thumbnails can only be set once it has succeeded")
+                    failed += 1
+                    continue
             if args.dry_run:
                 continue
-            youtube.videos().update(part=",".join(parts), body=body).execute()
+            if changes:
+                youtube.videos().update(part=",".join(parts), body=body).execute()
+            if thumbnail:
+                try:
+                    yt.set_thumbnail(youtube, video_id, thumbnail)
+                except HttpError as e:
+                    print("  FAILED: thumbnail " + yt.thumbnail_error_message(e)
+                          + (" (other changes were saved)" if changes else ""))
+                    failed += 1
+                    continue
             updated += 1
             print("  Updated.")
         except HttpError as e:

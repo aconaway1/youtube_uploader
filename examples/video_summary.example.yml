@@ -18,3 +18,4 @@ videos:
     recordingDate: 2026-05-20       # optional
     # madeForKids: false            # default false
     # language: "en"                # default "en"
+    # thumbnail: "BNSF 674 thumb.jpg"  # .jpg/.png, relative to video_dir; set after processing
