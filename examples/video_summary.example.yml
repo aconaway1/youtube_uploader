@@ -1,0 +1,20 @@
+# Copy to video_summary.yml and edit.
+# Only filename and title are required.
+video_dir: "~/Movies/Shorts"        # optional; relative paths are relative to this file
+videos:
+  - filename: "BNSF 674 yard job 20260520.mov"
+    title: "BNSF 674 Sansa Fe Pulling a Yard Job 20260520 #FreightTrain"
+    # Use | (not >) so line breaks are kept exactly as written.
+    description: |
+      Ex-Santa Fe warbonnet BNSF 674, with one replacement BNSF side panel, working the yard at Galesburg.
+
+      #gbb #warbonnet #SantaFe
+
+      Recorded 2026-05-20
+    keywords: "BNSF 674, warbonnet, Santa Fe, Galesburg, yard job"
+    categoryId: "19"                # default "22"
+    privacyStatus: "private"        # public | private | unlisted; default private
+    publishAt: "2026-11-22 13:00"   # optional, local time; forces private until then
+    recordingDate: 2026-05-20       # optional
+    # madeForKids: false            # default false
+    # language: "en"                # default "en"

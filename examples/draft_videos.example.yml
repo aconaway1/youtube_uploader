@@ -1,0 +1,14 @@
+# Copy to draft_videos.yml and edit.
+# Only url is required. Fields you leave out are left as they are on YouTube.
+videos:
+  - url: "https://youtube.com/shorts/VIDEO_ID"
+    title: "New descriptive title 20260520"
+    description: |
+      First line is what people see in search.
+
+      #gbb #galesburg
+    keywords: "BNSF, Galesburg"
+    publishAt: "2026-11-25 13:00"   # local time; schedules it (video stays private until then)
+
+  - url: "https://youtu.be/VIDEO_ID?si=share-param-is-fine"
+    title: "Only the title changes on this one"

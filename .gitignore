@@ -1,4 +1,17 @@
 .DS_Store
 .idea/
-*oauth2*
+__pycache__/
+.venv/
+.pytest_cache/
+
+# Secrets and per-machine state
 client_secrets.json
+token.json
+*oauth2*
+upload_log.json
+upload_log.json.tmp
+
+# Your working files (copy from examples/)
+video_summary.yml
+draft_videos.yml
+vids/

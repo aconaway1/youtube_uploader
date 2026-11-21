@@ -1,225 +1,221 @@
-import pprint
+"""Upload the videos listed in a YAML file.
 
-import httplib2
+Every entry is validated before anything is uploaded. Each successful upload
+is written to the upload log right away, so a rerun skips videos that already
+went up instead of uploading them twice.
+
+    python aaron_uploader.py                    # uses video_summary.yml
+    python aaron_uploader.py --vids batch.yml
+    python aaron_uploader.py --dry-run          # validate only, no sign-in
+"""
+import argparse
+import datetime
+import json
 import os
-import random
 import sys
-import time
-import yaml
 
-from apiclient.discovery import build
-from apiclient.errors import HttpError
-from apiclient.http import MediaFileUpload
-from oauth2client.client import flow_from_clientsecrets
-from oauth2client.file import Storage
-from oauth2client.tools import argparser, run_flow
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
 
+import yt_common as yt
 
 VIDEOS_FILE = "video_summary.yml"
+UPLOAD_LOG = os.path.join(yt.HERE, "upload_log.json")
+DEFAULT_CATEGORY = "22"  # People & Blogs; 19 = Travel & Events, 2 = Autos & Vehicles
 
 
-# Explicitly tell the underlying HTTP transport library not to retry, since
-# we are handling retry logic ourselves.
-httplib2.RETRIES = 1
+# --------------------------------------------------------------------------
+# Upload log
+# --------------------------------------------------------------------------
 
-# Maximum number of times to retry before giving up.
-MAX_RETRIES = 10
-
-# Always retry when these exceptions are raised.
-RETRIABLE_EXCEPTIONS = (httplib2.HttpLib2Error, IOError)
-
-# Always retry when an apiclient.errors.HttpError with one of these status
-# codes is raised.
-RETRIABLE_STATUS_CODES = [500, 502, 503, 504]
-
-# The CLIENT_SECRETS_FILE variable specifies the name of a file that contains
-# the OAuth 2.0 information for this application, including its client_id and
-# client_secret. You can acquire an OAuth 2.0 client ID and client secret from
-# the Google API Console at
-# https://console.cloud.google.com/.
-# Please ensure that you have enabled the YouTube Data API for your project.
-# For more information about using OAuth2 to access the YouTube Data API, see:
-#   https://developers.google.com/youtube/v3/guides/authentication
-# For more information about the client_secrets.json file format, see:
-#   https://developers.google.com/api-client-library/python/guide/aaa_client_secrets
-CLIENT_SECRETS_FILE = "client_secrets.json"
-
-# This OAuth 2.0 access scope allows an application to upload files to the
-# authenticated user's YouTube channel, but doesn't allow other types of access.
-YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
-YOUTUBE_API_SERVICE_NAME = "youtube"
-YOUTUBE_API_VERSION = "v3"
-
-# This variable defines a message to display if the CLIENT_SECRETS_FILE is
-# missing.
-MISSING_CLIENT_SECRETS_MESSAGE = """
-WARNING: Please configure OAuth 2.0
-
-To make this sample run you will need to populate the client_secrets.json file
-found at:
-
-   %s
-
-with information from the API Console
-https://console.cloud.google.com/
-
-For more information about the client_secrets.json file format, please visit:
-https://developers.google.com/api-client-library/python/guide/aaa_client_secrets
-""" % os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                   CLIENT_SECRETS_FILE))
-
-VALID_PRIVACY_STATUSES = ("public", "private", "unlisted")
+def load_log(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
 
 
-def get_authenticated_service():
-    flow = flow_from_clientsecrets(CLIENT_SECRETS_FILE,
-                                   scope=YOUTUBE_UPLOAD_SCOPE,
-                                   message=MISSING_CLIENT_SECRETS_MESSAGE)
-
-    storage = Storage("%s-oauth2.json" % sys.argv[0])
-    credentials = storage.get()
-
-    if credentials is None or credentials.invalid:
-        credentials = run_flow(flow, storage, args)
-
-    return build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
-                 http=credentials.authorize(httplib2.Http()))
+def save_log(path, log):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(log, f, indent=2, sort_keys=True)
+    os.replace(tmp, path)  # atomic, so a crash can't leave a half-written log
 
 
-def initialize_upload(youtube, vid_filename, body):
-    # tags = None
-    # if body.get('keywords'):
-    #     tags = body['keywords'].split(",")
+def log_key(path):
+    return os.path.realpath(path)
 
-    # body = dict(
-    #     snippet=dict(
-    #         title=options.title,
-    #         description=options.description,
-    #         tags=tags,
-    #         categoryId=options.category
-    #     ),
-    #     status=dict(
-    #         privacyStatus=options.privacyStatus
-    #     )
-    # )
 
-    # Call the API's videos.insert method to create and upload the video.
-    insert_request = youtube.videos().insert(
+# --------------------------------------------------------------------------
+# Building the request
+# --------------------------------------------------------------------------
+
+def build_job(vid, video_dir):
+    """Validate one YAML entry. Returns (job, problems)."""
+    problems = []
+    if not isinstance(vid, dict):
+        return None, ["entry is not a mapping"]
+
+    filename = vid.get("filename")
+    if not filename:
+        return None, ["missing filename"]
+    path = os.path.join(video_dir, os.path.expanduser(str(filename)))
+    if not os.path.isfile(path):
+        problems.append(f"file not found: {path}")
+
+    title = str(vid.get("title") or "").strip()
+    if not title:
+        problems.append("missing title")
+    yt.check_text("title", title, problems, max_chars=yt.MAX_TITLE_CHARS)
+
+    description = str(vid.get("description") or "").rstrip()
+    yt.check_text("description", description, problems, max_bytes=yt.MAX_DESCRIPTION_BYTES)
+
+    tags = yt.parse_tags(vid.get("keywords"))
+    yt.check_tags(tags, problems)
+
+    privacy = str(vid.get("privacyStatus", "private")).lower()
+    if privacy not in yt.VALID_PRIVACY_STATUSES:
+        problems.append(f"privacyStatus must be one of {', '.join(yt.VALID_PRIVACY_STATUSES)}")
+
+    status = {
+        "privacyStatus": privacy,
+        "selfDeclaredMadeForKids": bool(vid.get("madeForKids", False)),
+    }
+
+    if vid.get("publishAt"):
+        try:
+            status["publishAt"] = yt.parse_publish_at(vid["publishAt"])
+        except ValueError as e:
+            problems.append(str(e))
+        if privacy != "private":
+            # The API only schedules private videos; they flip public at publishAt.
+            print(f"  note: {filename}: publishAt set, uploading as private until then")
+            status["privacyStatus"] = "private"
+
+    body = {
+        "snippet": {
+            "title": title,
+            "description": description,
+            "tags": tags,
+            "categoryId": str(vid.get("categoryId", DEFAULT_CATEGORY)),
+            "defaultLanguage": vid.get("language", "en"),
+            "defaultAudioLanguage": vid.get("language", "en"),
+        },
+        "status": status,
+    }
+
+    if vid.get("recordingDate"):
+        try:
+            body["recordingDetails"] = {"recordingDate": yt.parse_recording_date(vid["recordingDate"])}
+        except ValueError as e:
+            problems.append(str(e))
+
+    return {"path": path, "filename": str(filename), "body": body}, problems
+
+
+def upload(youtube, job):
+    body = job["body"]
+    request = youtube.videos().insert(
         part=",".join(body.keys()),
         body=body,
-        # The chunksize parameter specifies the size of each chunk of data, in
-        # bytes, that will be uploaded at a time. Set a higher value for
-        # reliable connections as fewer chunks lead to faster uploads. Set a lower
-        # value for better recovery on less reliable connections.
-        #
-        # Setting "chunksize" equal to -1 in the code below means that the entire
-        # file will be uploaded in a single HTTP request. (If the upload fails,
-        # it will still be retried where it left off.) This is usually a best
-        # practice, but if you're using Python older than 2.6 or if you're
-        # running on App Engine, you should set the chunksize to something like
-        # 1024 * 1024 (1 megabyte).
-        media_body=MediaFileUpload(vid_filename, chunksize=-1, resumable=True)
+        media_body=MediaFileUpload(job["path"], chunksize=-1, resumable=True),
     )
-
-    upload_response = resumable_upload(insert_request)
-    return upload_response
-
-# This method implements an exponential backoff strategy to resume a
-# failed upload.
+    return yt.resumable_upload(request)
 
 
-def resumable_upload(insert_request):
-    response = None
-    error = None
-    retry = 0
-    while response is None:
+# --------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------
+
+def main(argv=None, youtube=None):
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--vids", default=VIDEOS_FILE, help="YAML file of videos to upload")
+    parser.add_argument("--log", default=UPLOAD_LOG, help="upload log (JSON)")
+    parser.add_argument("--dry-run", action="store_true", help="validate the file and stop")
+    parser.add_argument("--force", action="store_true",
+                        help="upload even if the upload log says a file already went up")
+    args = parser.parse_args(argv)
+
+    data = yt.load_yaml(args.vids)
+    base = os.path.dirname(os.path.abspath(args.vids))
+    video_dir = os.path.expanduser(str(data.get("video_dir") or "."))
+    if not os.path.isabs(video_dir):
+        video_dir = os.path.join(base, video_dir)
+
+    jobs, bad = [], 0
+    for i, vid in enumerate(data["videos"], 1):
+        job, problems = build_job(vid, video_dir)
+        label = job["filename"] if job else f"entry {i}"
+        for p in problems:
+            print(f"ERROR {label}: {p}")
+        if problems:
+            bad += 1
+        else:
+            jobs.append(job)
+    if bad:
+        print(f"\n{bad} entr{'y' if bad == 1 else 'ies'} need fixing. Nothing was uploaded.")
+        return 2
+
+    log = load_log(args.log)
+    todo = []
+    for job in jobs:
+        prev = log.get(log_key(job["path"]))
+        if prev and not args.force:
+            print(f"SKIP {job['filename']}: already uploaded as {prev['video_id']} "
+                  f"on {prev['uploaded_at']} (use --force to upload again)")
+        else:
+            todo.append(job)
+
+    if args.dry_run:
+        for job in todo:
+            s = job["body"]["status"]
+            when = f", publishes {s['publishAt']}" if "publishAt" in s else ""
+            print(f"OK   {job['filename']}: \"{job['body']['snippet']['title']}\" "
+                  f"({s['privacyStatus']}{when})")
+        print(f"\nDry run: {len(todo)} to upload, nothing sent.")
+        return 0
+    if not todo:
+        print("Nothing to upload.")
+        return 0
+
+    youtube = youtube or yt.get_youtube()
+    done, failed = [], []
+    for n, job in enumerate(todo, 1):
+        print(f"[{n}/{len(todo)}] {job['filename']}")
         try:
-            print("Uploading file...")
-            status, response = insert_request.next_chunk()
-            if response is not None:
-                if 'id' in response:
-                    print("Video id '%s' was successfully uploaded." %
-                          response['id'])
-                else:
-                    exit("The upload failed with an unexpected response: %s" % response)
+            response = upload(youtube, job)
         except HttpError as e:
-            if e.resp.status in RETRIABLE_STATUS_CODES:
-                error = "A retriable HTTP error %d occurred:\n%s" % (e.resp.status,
-                                                                     e.content)
-            else:
-                raise
-        except RETRIABLE_EXCEPTIONS as e:
-            error = "A retriable error occurred: %s" % e
+            reason = yt.http_error_reason(e)
+            print(f"  FAILED: HTTP {e.resp.status} {reason}")
+            failed.append(job)
+            if reason in yt.FATAL_REASONS:
+                print("  Stopping: this error will affect every remaining upload.")
+                break
+            continue
+        except (RuntimeError, OSError) as e:
+            print(f"  FAILED: {e}")
+            failed.append(job)
+            continue
 
-        if error is not None:
-            print(error)
-            retry += 1
-            if retry > MAX_RETRIES:
-                exit("No longer attempting to retry.")
+        video_id = response["id"]
+        log[log_key(job["path"])] = {
+            "video_id": video_id,
+            "title": job["body"]["snippet"]["title"],
+            "uploaded_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "privacy_status": response.get("status", {}).get("privacyStatus"),
+            "size": os.path.getsize(job["path"]),
+        }
+        save_log(args.log, log)
+        done.append(job)
+        print(f"  Uploaded: https://youtu.be/{video_id}")
 
-            max_sleep = 2 ** retry
-            sleep_seconds = random.random() * max_sleep
-            print("Sleeping %f seconds and then retrying..." % sleep_seconds)
-            time.sleep(sleep_seconds)
-
-    return response
+    remaining = len(todo) - len(done) - len(failed)
+    print(f"\n{len(done)} uploaded, {len(failed)} failed"
+          + (f", {remaining} not attempted" if remaining else "") + ".")
+    return 1 if failed or remaining else 0
 
 
 if __name__ == "__main__":
-    argparser.add_argument("--vids", required=False,
-                           help="YAML file with info on videos to upload")
-    args = argparser.parse_args()
-
-    if args.vids:
-        if not os.path.exists(args.vids):
-            exit("Please specify a valid file using the --vids= parameter.")
-        vids_file = args.vids
-    else:
-        vids_file = VIDEOS_FILE
-
-    with open(VIDEOS_FILE) as f:
-        vids_load = yaml.safe_load(f)
-
-    if not vids_load.get('videos'):
-        exit("That file did not contain any video information.")
-
-    if vids_load.get('video_dir'):
-        video_path = f"{vids_load['video_dir']}/"
-    else:
-        video_path = "./"
-
-    youtube = get_authenticated_service()
-
-    for vid in vids_load['videos']:
-        print(f"{vid['filename']}")
-
-        if not vid.get('filename'):
-            print("The filename wasn't given. Skipping.")
-            continue
-
-        full_filename = f"{video_path}/{vid['filename']}"
-
-        tags = None
-        if vid.get('keywords'):
-            tags = vid['keywords'].split(",")
-
-        body = dict(
-            snippet=dict(
-                title=vid['title'],
-                description=vid['description'],
-                tags=tags,
-                categoryId=vid['categoryId']
-            ),
-            status=dict(
-                privacyStatus=vid['privacyStatus'],
-                madeForKids=True,
-
-            )
-        )
-        try:
-            upload_response = initialize_upload(youtube, full_filename, body)
-        except HttpError as e:
-            print("An HTTP error %d occurred:\n%s" % (e.resp.status, e.content))
-            exit("Check that HTTP error.")
-
-        print(f"{upload_response}")
+    sys.exit(main())
