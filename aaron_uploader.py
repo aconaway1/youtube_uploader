@@ -84,9 +84,13 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
         "selfDeclaredMadeForKids": bool(vid.get("madeForKids", False)),
     }
 
+    too_soon = None
     if vid.get("publishAt"):
         try:
             status["publishAt"] = yt.parse_publish_at(vid["publishAt"], min_lead)
+        except yt.PublishTooSoon as e:
+            status["publishAt"] = e.when
+            too_soon = e.when  # main() offers to move it
         except ValueError as e:
             problems.append(str(e))
         if privacy != "private":
@@ -117,7 +121,8 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
         thumbnail = yt.resolve_path(vid["thumbnail"], video_dir)
         yt.check_thumbnail(thumbnail, problems)
 
-    return {"path": path, "filename": str(filename), "body": body, "thumbnail": thumbnail}, problems
+    return {"path": path, "filename": str(filename), "body": body, "thumbnail": thumbnail,
+            "too_soon": too_soon, "may_move_schedule": False}, problems
 
 
 def upload(youtube, job):
@@ -192,6 +197,9 @@ def main(argv=None, youtube=None):
     parser.add_argument("--yes", action="store_true",
                         help="don't ask before uploading videos that will be public, unlisted "
                              "or scheduled (for unattended runs)")
+    parser.add_argument("--fix-schedule", action="store_true",
+                        help="move a publishAt that's too close to --min-lead minutes from now "
+                             "without asking")
     parser.add_argument("--min-lead", type=int, default=yt.DEFAULT_MIN_LEAD_MINUTES,
                         metavar="MINUTES",
                         help="publishAt must be at least this far in the future (default %(default)s)")
@@ -216,6 +224,15 @@ def main(argv=None, youtube=None):
             bad += 1
         else:
             jobs.append(job)
+    for job in jobs:
+        if job["too_soon"]:
+            new = yt.offer_new_publish_time(job["filename"], job["too_soon"], args.min_lead,
+                                            auto=args.fix_schedule)
+            if new:
+                job["body"]["status"]["publishAt"] = new
+                job["may_move_schedule"] = True
+            else:
+                bad += 1
     seen = {}
     for job in jobs:
         key = log_key(job["path"])
@@ -307,10 +324,15 @@ def main(argv=None, youtube=None):
         publish_at = job["body"]["status"].get("publishAt")
         if publish_at and yt.seconds_until(publish_at) < MIN_SECONDS_AT_UPLOAD:
             # Earlier uploads took long enough that this schedule is now too close.
-            print(f"  FAILED: scheduled for {yt.format_when(publish_at)}, too soon to upload "
-                  "safely now. Pick a later publishAt and rerun.")
-            failed.append(job)
-            continue
+            if args.fix_schedule or job["may_move_schedule"]:
+                job["body"]["status"]["publishAt"] = yt.earliest_publish_time(args.min_lead)
+                print(f"  Schedule was {yt.format_when(publish_at)}; moved to "
+                      f"{yt.format_when(job['body']['status']['publishAt'])}")
+            else:
+                print(f"  FAILED: scheduled for {yt.format_when(publish_at)}, too soon to upload "
+                      "safely now. Pick a later publishAt, or use --fix-schedule.")
+                failed.append(job)
+                continue
         try:
             response = upload(youtube, job)
         except HttpError as e:

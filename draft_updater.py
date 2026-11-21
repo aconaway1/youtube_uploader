@@ -67,9 +67,13 @@ def parse_changes(vid, base_dir=".", min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
         if privacy not in yt.VALID_PRIVACY_STATUSES:
             problems.append(f"privacyStatus must be one of {', '.join(yt.VALID_PRIVACY_STATUSES)}")
         changes["status"]["privacyStatus"] = privacy
+    too_soon = None
     if vid.get("publishAt"):
         try:
             changes["status"]["publishAt"] = yt.parse_publish_at(vid["publishAt"], min_lead)
+        except yt.PublishTooSoon as e:
+            changes["status"]["publishAt"] = e.when
+            too_soon = e.when  # main() offers to move it
         except ValueError as e:
             problems.append(str(e))
         if changes["status"].get("privacyStatus", "private") != "private":
@@ -84,6 +88,8 @@ def parse_changes(vid, base_dir=".", min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
             problems.append(str(e))
 
     changes = {part: fields for part, fields in changes.items() if fields}
+    if too_soon:
+        changes["too_soon"] = too_soon
     if vid.get("thumbnail"):
         # Not a videos.update part; main() sends it with thumbnails.set.
         changes["thumbnail"] = yt.resolve_path(vid["thumbnail"], base_dir)
@@ -140,6 +146,9 @@ def main(argv=None, youtube=None):
                         help="read the videos and show what would change, without saving")
     parser.add_argument("--yes", action="store_true",
                         help="don't ask before making videos public/unlisted or scheduling them")
+    parser.add_argument("--fix-schedule", action="store_true",
+                        help="move a publishAt that's too close to --min-lead minutes from now "
+                             "without asking")
     parser.add_argument("--min-lead", type=int, default=yt.DEFAULT_MIN_LEAD_MINUTES,
                         metavar="MINUTES",
                         help="publishAt must be at least this far in the future (default %(default)s)")
@@ -155,8 +164,15 @@ def main(argv=None, youtube=None):
             print(f"ERROR {label}: {p}")
         if problems:
             bad += 1
-        else:
-            jobs.append((video_id, changes))
+            continue
+        if "too_soon" in changes:
+            new = yt.offer_new_publish_time(label, changes.pop("too_soon"), args.min_lead,
+                                            auto=args.fix_schedule)
+            if not new:
+                bad += 1
+                continue
+            changes["status"]["publishAt"] = new
+        jobs.append((video_id, changes))
     if bad:
         print(f"\n{bad} {'entry needs' if bad == 1 else 'entries need'} fixing. Nothing was changed.")
         return 2

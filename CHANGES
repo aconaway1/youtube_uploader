@@ -23,6 +23,8 @@ Version 0.3
   public, unlisted or scheduled (`--yes` to skip; refuses when not in a terminal);
   publishAt must be 15+ minutes away (`--min-lead`), re-checked before each upload.
   The updater now reads and shows every change before saving any.
+- A publishAt that's too close can be moved to 15 minutes from now: asked y/N in a
+  terminal, or automatically with `--fix-schedule` (both scripts)
 - Examples list every supported field, with defaults and limits; a test keeps
   them in sync with the code
 - Uploader: one failed video no longer aborts the batch; quota/limit errors stop it

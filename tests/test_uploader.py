@@ -781,3 +781,78 @@ def test_updater_making_public_needs_confirmation(tmp_path, capsys):
 def test_updater_making_private_does_not_prompt(tmp_path):
     rc, v = run_updater(tmp_path, "videos:\n  - url: VID\n    privacyStatus: private\n", yes=False)
     assert rc == 0 and v.updated[0][1]["status"]["privacyStatus"] == "private"
+
+
+# ---------------------------------------------------------------- moving a too-close schedule
+
+def soon_yaml(workdir, minutes=5):
+    return write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                      f"  - {{filename: a.mov, title: A, publishAt: '{in_minutes(minutes)}'}}\n")
+
+
+def test_earliest_publish_time_is_past_min_lead():
+    t = yt.seconds_until(yt.earliest_publish_time(15))
+    assert 15 * 60 < t <= 17 * 60
+    dt = datetime.datetime.fromisoformat(yt.earliest_publish_time(15))
+    assert dt.second == 0 and dt.microsecond == 0 and dt.tzinfo is not None
+
+
+def test_fix_schedule_moves_it(workdir, capsys):
+    f = soon_yaml(workdir)
+    fake = FakeYouTube(insert_results=[{"id": "1"}])
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--yes", "--fix-schedule",
+                                "--log", str(workdir / "l.json")], youtube=fake) == 0
+    sent = fake.videos().inserted[0][1]["status"]["publishAt"]
+    assert 15 * 60 < yt.seconds_until(sent) <= 17 * 60
+    assert "Moved to" in capsys.readouterr().out
+
+
+def test_too_soon_without_terminal_explains_and_uploads_nothing(workdir, capsys):
+    f = soon_yaml(workdir)
+    fake = FakeYouTube(insert_results=[{"id": "1"}])
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--yes",
+                                "--log", str(workdir / "l.json")], youtube=fake) == 2
+    assert "--fix-schedule" in capsys.readouterr().out and fake.videos().inserted == []
+
+
+@pytest.mark.parametrize("answer,code,uploads", [("y", 0, 1), ("n", 2, 0)])
+def test_too_soon_prompt(workdir, monkeypatch, answer, code, uploads):
+    f = soon_yaml(workdir)
+    monkeypatch.setattr(yt.sys, "stdin", FakeTTY())
+    answers = iter([answer, "y"])  # 2nd answer is the go-live confirmation
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    fake = FakeYouTube(insert_results=[{"id": "1"}])
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check",
+                                "--log", str(workdir / "l.json")], youtube=fake) == code
+    assert len(fake.videos().inserted) == uploads
+
+
+def test_past_time_is_still_an_error_even_with_fix_schedule(workdir, capsys):
+    f = soon_yaml(workdir, minutes=-30)
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--dry-run", "--fix-schedule",
+                                "--log", str(workdir / "l.json")]) == 2
+    assert "in the past" in capsys.readouterr().out
+
+
+def test_upload_time_recheck_moves_when_allowed(workdir, monkeypatch, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                   f"  - {{filename: a.mov, title: A, publishAt: '{in_minutes(60)}'}}\n")
+    real = yt.seconds_until
+    calls = iter([120])  # first check at upload time says only 2 minutes left
+    monkeypatch.setattr(yt, "seconds_until", lambda v: next(calls, None) or real(v))
+    fake = FakeYouTube(insert_results=[{"id": "1"}])
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--yes", "--fix-schedule",
+                                "--log", str(workdir / "l.json")], youtube=fake) == 0
+    assert "moved to" in capsys.readouterr().out
+    assert yt.seconds_until(fake.videos().inserted[0][1]["status"]["publishAt"]) > 15 * 60
+
+
+def test_updater_fix_schedule(tmp_path, capsys):
+    draft = dict(CURRENT, status=dict(CURRENT["status"], privacyStatus="private"))
+    rc, v = run_updater(tmp_path, f"videos:\n  - url: VID\n    publishAt: '{in_minutes(3)}'\n",
+                        current=draft)
+    assert rc == 2 and v.updated == []
+    f = write_yaml(tmp_path / "d.yml", f"videos:\n  - url: VID\n    publishAt: '{in_minutes(3)}'\n")
+    fake = FakeYouTube(current={"VID": draft})
+    assert draft_updater.main(["--vids", f, "--yes", "--fix-schedule"], youtube=fake) == 0
+    assert yt.seconds_until(fake.videos().updated[0][1]["status"]["publishAt"]) > 15 * 60

@@ -198,6 +198,14 @@ def parse_video_id(url_or_id):
 DEFAULT_MIN_LEAD_MINUTES = 15
 
 
+class PublishTooSoon(ValueError):
+    """publishAt is in the future but closer than the minimum lead time."""
+
+    def __init__(self, message, when):
+        super().__init__(message)
+        self.when = when
+
+
 def parse_publish_at(value, min_lead_minutes=DEFAULT_MIN_LEAD_MINUTES):
     """Local 'YYYY-MM-DD HH:MM[:SS]' (string or YAML datetime) -> RFC 3339 string.
 
@@ -224,8 +232,8 @@ def parse_publish_at(value, min_lead_minutes=DEFAULT_MIN_LEAD_MINUTES):
     if dt <= now:
         raise ValueError(f"publishAt {format_when(dt)} is in the past")
     if dt < now + datetime.timedelta(minutes=min_lead_minutes):
-        raise ValueError(f"publishAt {format_when(dt)} is less than {min_lead_minutes} minutes "
-                         "away; pick a later time (or change --min-lead)")
+        raise PublishTooSoon(f"publishAt {format_when(dt)} is less than {min_lead_minutes} "
+                             "minutes away", dt.isoformat())
     return dt.isoformat()
 
 
@@ -477,3 +485,37 @@ def check_tags(tags, problems):
 def seconds_until(value):
     dt = _as_datetime(value)
     return (dt - datetime.datetime.now(dt.tzinfo)).total_seconds()
+
+
+def earliest_publish_time(min_lead_minutes):
+    """Now + min lead, rounded up to the next whole minute, as RFC 3339."""
+    dt = datetime.datetime.now().astimezone() + datetime.timedelta(minutes=min_lead_minutes)
+    dt = (dt + datetime.timedelta(minutes=1)).replace(second=0, microsecond=0)
+    return dt.isoformat()
+
+
+def offer_new_publish_time(label, when, min_lead_minutes, auto=False, input_fn=None, stream=None):
+    """A publishAt is too close. Offer to move it; returns the new time or None.
+
+    auto (--fix-schedule) moves it without asking. Otherwise asks y/N in a
+    terminal, and declines when there's no terminal to ask in.
+    """
+    input_fn = input_fn or input
+    stream = stream or sys.stdin
+    new = earliest_publish_time(min_lead_minutes)
+    print(f"{label}: publishAt {format_when(when)} is less than {min_lead_minutes} minutes away.")
+    if auto:
+        print(f"  Moved to {format_when(new)} (--fix-schedule).")
+        return new
+    if not stream.isatty():
+        print("  Pick a later time, or rerun with --fix-schedule to move it to "
+              f"{min_lead_minutes} minutes from now.")
+        return None
+    try:
+        answer = input_fn(f"  Move it to {format_when(new)}? [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return new
+    print("  Left as is. Pick a later time in the YAML.")
+    return None

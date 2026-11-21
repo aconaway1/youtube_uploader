@@ -138,8 +138,10 @@ Google says videos uploaded through an API project that hasn't passed the
   a terminal (launchd, cron, a pipe) it can't ask, so it stops unless you pass `--yes`.
 - **A minimum lead time for `publishAt`.** A schedule less than 15 minutes away is rejected, so a
   video can't go live before it has processed and you've looked at it. Change it with
-  `--min-lead MINUTES`. Each scheduled video is checked again just before it uploads, and is skipped
-  if a long batch has left less than 5 minutes.
+  `--min-lead MINUTES`. In a terminal you're offered `Move it to <15 minutes from now>? [y/N]`;
+  `--fix-schedule` moves it without asking. Times already in the past are always an error (likely
+  a wrong date). Each scheduled video is checked again just before it uploads; if a long batch has
+  left less than 5 minutes it's moved (when you allowed moving) or skipped.
 
 The draft updater works the same way: it reads every video and shows all changes first, asks once if
 any change makes a video more visible or schedules it (`--yes` to skip), then saves. Retitling a
