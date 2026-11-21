@@ -1,5 +1,7 @@
 # Aaron YouTube Uploader
 
+[![Tests](https://github.com/aconaway1/youtube_uploader/actions/workflows/tests.yml/badge.svg)](https://github.com/aconaway1/youtube_uploader/actions/workflows/tests.yml)
+
 I post railfan Shorts to [Ron Con Rails](https://ronconrails.com) most days, and uploading them one
 at a time by hand got old. These scripts upload a batch of videos from a YAML file, spread them out
 one a day, and keep me from posting the same clip twice. It started from Google's upload sample,
@@ -291,11 +293,24 @@ videos:
     privacyStatus: "unlisted"       # don't combine with publishAt
     recordingDate: 2026-05-20
     thumbnail: "thumbs/new.jpg"     # .jpg/.png, relative to this YAML file
+    playlists: ["BNSF", "Galesburg"]  # adds it to these playlists
 ```
 
 ```
 python updater.py --dry-run    # shows old -> new for each change, saves nothing
 python updater.py
+```
+
+`playlists:` adds the video to each playlist it isn't already in (it checks first, since YouTube
+would otherwise let it appear twice). It never removes a video from a playlist. Playlist names are
+checked before anything changes, as in the uploader. Handy for sorting older Shorts:
+
+```yaml
+videos:
+  - url: https://youtube.com/shorts/AAAA
+    playlists: ["MARTA"]
+  - url: https://youtube.com/shorts/BBBB
+    playlists: ["Amtrak", "Galesburg, Illinois"]
 ```
 
 It reads each video's current details first and only changes the fields you gave, so tags,
@@ -357,6 +372,7 @@ You get 10,000 units a day for most calls, and uploads have their own limit of 1
 | Set a thumbnail (`thumbnails.set`) | 50 units |
 | Add to a playlist (`playlistItems.insert`) | 50 units |
 | Look up your playlists (`playlists.list`) | 1 unit per 50 playlists |
+| Check if a video is in a playlist (`playlistItems.list`) | 1 unit |
 
 So the uploader costs 1 unit per video, plus about 1 unit per 25 channel videos for the duplicate
 check, plus about 51 for a thumbnail (a few 1-unit checks while
@@ -371,7 +387,9 @@ pip install -r requirements-dev.txt
 python -m pytest tests
 ```
 
-The tests use a fake YouTube service, so they need no network or sign-in.
+The tests use a fake YouTube service, so they need no network or sign-in. GitHub Actions runs them
+on every push (Ubuntu with Python 3.10, 3.12 and 3.13, plus macOS, which also checks real Finder
+tags); see `.github/workflows/tests.yml`.
 
 # License
 

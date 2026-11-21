@@ -26,6 +26,9 @@ videos:
                                      # publishAt, so it's commented out here
     recordingDate: 2026-05-20        # Shoot date: 2026-05-20 or 20260520
     madeForKids: false
+    playlists: ["BNSF", "Galesburg"] # Adds the video to these playlists (names as shown on your
+                                     # channel, or IDs). Skips ones it's already in; doesn't
+                                     # remove it from any. 50 quota units per add
     thumbnail: "thumbs/new.jpg"      # .jpg or .png, max 50 MB, relative to this file.
                                      # The video must have finished processing
 

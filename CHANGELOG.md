@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### New
+- `playlists:` in the updater: adds existing videos to playlists, skipping ones they're already in.
 - `schedule.skip`: dates and weekday names that never get a scheduled video (holidays, days off).
   `upcoming.py` marks them "skipped".
 - `settings.yml` (git-ignored; see `examples/settings.example.yml`) sets the Finder tag names, the

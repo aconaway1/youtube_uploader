@@ -131,10 +131,17 @@ class FakeChannel:
 class FakePlaylists:
     """playlists.list pages + playlistItems.insert results."""
 
-    def __init__(self, playlists, insert_results=None):
+    def __init__(self, playlists, insert_results=None, members=None):
         self.playlists = playlists
         self.insert_results = list(insert_results or [])
         self.added = []  # (playlist_id, video_id)
+        self.members = set(members or [])  # (playlist_id, video_id) already in a playlist
+        self.member_checks = 0
+
+    def membership(self, part, playlistId, videoId):
+        self.member_checks += 1
+        hit = (playlistId, videoId) in self.members
+        return FakeRequest([{"items": [{"id": "x"}] if hit else []}])
 
     def list(self, part, mine, maxResults, pageToken=None):
         start = int(pageToken or 0)
@@ -155,16 +162,17 @@ class FakePlaylists:
                 if isinstance(r, Exception):
                     raise r
                 fake.added.append((pid, vid))
+                fake.members.add((pid, vid))
                 return r
         return Req()
 
 
 class FakeYouTube:
     def __init__(self, thumbnail_results=None, existing=None, playlists=None,
-                 playlist_results=None, **kw):
+                 playlist_results=None, members=None, **kw):
         self._videos = FakeVideos(**kw)
         self._thumbs = FakeThumbnails(thumbnail_results)
-        self.pl = FakePlaylists(playlists or [], playlist_results)
+        self.pl = FakePlaylists(playlists or [], playlist_results, members)
         self.channel = FakeChannel(existing or [])
         for v in existing or []:
             if not v.get("deleted"):  # deleted videos are still in the uploads list, briefly
@@ -180,8 +188,10 @@ class FakeYouTube:
         return type("C", (), {"list": lambda _s, **k: self.channel.channels_list(**k)})()
 
     def playlistItems(self):
-        return type("P", (), {"list": lambda _s, **k: self.channel.playlist_list(**k),
-                              "insert": lambda _s, **k: self.pl.insert(**k)})()
+        return type("P", (), {
+            "list": lambda _s, **k: (self.pl.membership(**k) if "videoId" in k
+                                     else self.channel.playlist_list(**k)),
+            "insert": lambda _s, **k: self.pl.insert(**k)})()
 
     def playlists(self):
         return self.pl
@@ -669,7 +679,8 @@ UPLOADER_KEYS = {"filename", "title", "description", "keywords", "categoryId", "
                  "publishAt", "recordingDate", "madeForKids", "language", "thumbnail",
                  "skipSchedule", "playlists"}
 UPDATER_KEYS = {"url", "title", "description", "keywords", "categoryId", "language",
-                "privacyStatus", "publishAt", "recordingDate", "madeForKids", "thumbnail"}
+                "privacyStatus", "publishAt", "recordingDate", "madeForKids", "thumbnail",
+                "playlists"}
 
 
 def _keys_in_example(path):
@@ -1522,3 +1533,53 @@ def test_upcoming_reads_skip_from_yaml(tmp_path, capsys):
     assert upcoming.main(["--days", "3", "--vids", vids], youtube=FakeYouTube(existing=[])) == 0
     out = capsys.readouterr().out
     assert "skipped" in out and "1 skipped day" in out
+
+
+# ---------------------------------------------------------------- updater playlists
+
+def test_updater_adds_to_playlists_skipping_ones_its_in(tmp_path, capsys):
+    f = write_yaml(tmp_path / "d.yml", "videos:\n  - url: VID\n    playlists: [BNSF, Railfan Shorts]\n")
+    fake = FakeYouTube(current={"VID": CURRENT}, playlists=PLAYLISTS, members={("PL_SHORTS", "VID")})
+    assert updater.main(["--vids", f], youtube=fake) == 0
+    assert fake.pl.added == [("PL_BNSF", "VID")]
+    assert fake.videos().updated == []              # playlists only: no videos.update
+    out = capsys.readouterr().out
+    assert 'playlist "BNSF": + add' in out and 'playlist "Railfan Shorts": already in it' in out
+
+
+def test_updater_playlists_with_other_changes(tmp_path):
+    f = write_yaml(tmp_path / "d.yml", "videos:\n  - url: VID\n    title: New\n    playlists: BNSF\n")
+    fake = FakeYouTube(current={"VID": CURRENT}, playlists=PLAYLISTS)
+    assert updater.main(["--vids", f], youtube=fake) == 0
+    assert fake.videos().updated[0][1]["snippet"]["title"] == "New"
+    assert fake.pl.added == [("PL_BNSF", "VID")]
+
+
+def test_updater_unknown_playlist_changes_nothing(tmp_path, capsys):
+    f = write_yaml(tmp_path / "d.yml", "videos:\n  - url: VID\n    title: New\n    playlists: [Nope]\n")
+    fake = FakeYouTube(current={"VID": CURRENT}, playlists=PLAYLISTS)
+    assert updater.main(["--vids", f], youtube=fake) == 2
+    assert fake.videos().updated == [] and fake.pl.added == []
+    assert 'no playlist named "Nope"' in capsys.readouterr().out
+
+
+def test_updater_playlist_dry_run(tmp_path, capsys):
+    f = write_yaml(tmp_path / "d.yml", "videos:\n  - url: VID\n    playlists: [BNSF]\n")
+    fake = FakeYouTube(current={"VID": CURRENT}, playlists=PLAYLISTS)
+    assert updater.main(["--vids", f, "--dry-run"], youtube=fake) == 0
+    assert fake.pl.added == [] and 'playlist "BNSF": + add' in capsys.readouterr().out
+
+
+def test_updater_already_in_every_playlist_is_a_no_op(tmp_path, capsys):
+    f = write_yaml(tmp_path / "d.yml", "videos:\n  - url: VID\n    playlists: [BNSF]\n")
+    fake = FakeYouTube(current={"VID": CURRENT}, playlists=PLAYLISTS, members={("PL_BNSF", "VID")})
+    assert updater.main(["--vids", f], youtube=fake) == 0
+    assert fake.pl.added == [] and "(nothing to change)" in capsys.readouterr().out
+
+
+def test_updater_failed_playlist_add_counts_as_failure(tmp_path, capsys):
+    f = write_yaml(tmp_path / "d.yml", "videos:\n  - url: VID\n    playlists: [BNSF]\n")
+    fake = FakeYouTube(current={"VID": CURRENT}, playlists=PLAYLISTS,
+                       playlist_results=[http_error(403, "playlistItemsNotAccessible")])
+    assert updater.main(["--vids", f], youtube=fake) == 1
+    assert "couldn't add to playlist" in capsys.readouterr().out

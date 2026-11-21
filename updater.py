@@ -9,7 +9,7 @@ settings) stays as it is.
     python updater.py --dry-run           # show changes, don't save them
 
 Each video costs 51 quota units (1 to read it, 50 to update it), plus 50
-for a thumbnail.
+for a thumbnail, plus 1 per playlist to check and 50 per playlist it's added to.
 """
 import argparse
 import copy
@@ -94,9 +94,15 @@ def parse_changes(vid, base_dir=".", min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
         # Not a videos.update part; main() sends it with thumbnails.set.
         changes["thumbnail"] = yt.resolve_path(vid["thumbnail"], base_dir)
         yt.check_thumbnail(changes["thumbnail"], problems)
+    if "playlists" in vid:
+        # Not a videos.update part either; main() adds the video with playlistItems.insert.
+        names = yt.as_name_list(vid["playlists"])
+        if not names:
+            problems.append("playlists is empty")
+        changes["playlists"] = names
     if not changes and not problems:
         problems.append("nothing to change (give title, description, keywords, publishAt, "
-                        "thumbnail, ...)")
+                        "thumbnail, playlists, ...)")
     return video_id, changes, problems
 
 
@@ -179,12 +185,40 @@ def main(argv=None, youtube=None):
 
     youtube = youtube or yt.get_youtube()
 
+    # Look up playlist names first, so a typo stops the run before anything is read or changed.
+    if any("playlists" in c for _, c in jobs):
+        try:
+            resolver = yt.PlaylistResolver(yt.channel_playlists(youtube))
+        except HttpError as e:
+            print(f"Couldn't read the channel's playlists: HTTP {e.resp.status} "
+                  f"{yt.http_error_reason(e)}. Nothing was changed.")
+            return 1
+        bad_pl = 0
+        for video_id, changes in jobs:
+            if "playlists" not in changes:
+                continue
+            targets = []
+            for name in changes["playlists"]:
+                p, problem = resolver.resolve(name)
+                if problem:
+                    print(f"ERROR {video_id}: {problem}")
+                    bad_pl += 1
+                elif p["id"] not in {t["id"] for t in targets}:
+                    targets.append(p)
+            changes["playlist_targets"] = targets
+        if bad_pl:
+            print(f"\n{bad_pl} playlist name{'s' if bad_pl != 1 else ''} not found. "
+                  "Nothing was changed.")
+            return 2
+
     # Pass 1: read every video and work out the changes, without saving anything.
     plans, failed = [], 0
     for n, (video_id, changes) in enumerate(jobs, 1):
         print(f"[{n}/{len(jobs)}] {video_id}")
         changes = dict(changes)
         thumbnail = changes.pop("thumbnail", None)
+        changes.pop("playlists", None)
+        targets = changes.pop("playlist_targets", [])
         try:
             found = youtube.videos().list(part="snippet,status,recordingDetails,processingDetails",
                                           id=video_id).execute().get("items", [])
@@ -219,8 +253,25 @@ def main(argv=None, youtube=None):
                       "thumbnails can only be set once it has succeeded")
                 failed += 1
                 continue
+        to_add = []
+        try:
+            for t in targets:
+                # Check membership first: YouTube lets a video be in a playlist twice.
+                there = youtube.playlistItems().list(part="id", playlistId=t["id"],
+                                                     videoId=video_id).execute().get("items")
+                if there:
+                    print(f"    playlist \"{t['title']}\": already in it")
+                else:
+                    print(f"    playlist \"{t['title']}\": + add")
+                    to_add.append(t)
+        except HttpError as e:
+            print(f"  FAILED: couldn't check playlists: HTTP {e.resp.status} {yt.http_error_reason(e)}")
+            failed += 1
+            continue
+        if not body and not thumbnail and not to_add:
+            print("    (nothing to change)")
         plans.append({"id": video_id, "current": current, "body": body, "parts": parts,
-                      "thumbnail": thumbnail})
+                      "thumbnail": thumbnail, "playlists": to_add})
 
     if args.dry_run:
         print(f"\nDry run: {len(jobs)} video(s) checked, nothing saved.")
@@ -257,6 +308,18 @@ def main(argv=None, youtube=None):
                           + (" (other changes were saved)" if p["body"] else ""))
                     failed += 1
                     continue
+            pl_failed = 0
+            for t in p["playlists"]:
+                try:
+                    yt.add_to_playlist(youtube, t["id"], p["id"])
+                    print(f"{p['id']}: added to playlist \"{t['title']}\"")
+                except HttpError as e:
+                    print(f"{p['id']}: FAILED: couldn't add to playlist \"{t['title']}\": "
+                          f"HTTP {e.resp.status} {yt.http_error_reason(e)}")
+                    pl_failed += 1
+            if pl_failed:
+                failed += 1
+                continue
             updated += 1
             vis = yt.visibility(p["body"]["status"]) if p["body"] and "status" in p["body"] else None
             print(f"{p['id']}: updated" + (f" ({vis})" if vis else ""))
