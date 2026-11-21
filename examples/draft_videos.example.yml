@@ -1,6 +1,6 @@
 # Updater input: copy to draft_videos.yml and edit.
-#   python draft_updater.py --dry-run
-#   python draft_updater.py
+#   python updater.py --dry-run
+#   python updater.py
 #
 # Every field the updater understands is shown below. Only url is required.
 # Fields you leave out are left as they are on YouTube.

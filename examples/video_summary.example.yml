@@ -1,6 +1,6 @@
 # Uploader input: copy to video_summary.yml and edit.
-#   python aaron_uploader.py --dry-run
-#   python aaron_uploader.py
+#   python uploader.py --dry-run
+#   python uploader.py
 #
 # Every field the uploader understands is shown below. Only filename and
 # title are required; delete any other line to use its default.

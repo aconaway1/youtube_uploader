@@ -4,9 +4,9 @@ Reads each video's current details first and changes only the fields given
 in the YAML, so anything you leave out (tags, language, translations, other
 settings) stays as it is.
 
-    python draft_updater.py                     # uses draft_videos.yml
-    python draft_updater.py --vids edits.yml
-    python draft_updater.py --dry-run           # show changes, don't save them
+    python updater.py                     # uses draft_videos.yml
+    python updater.py --vids edits.yml
+    python updater.py --dry-run           # show changes, don't save them
 
 Each video costs 51 quota units (1 to read it, 50 to update it), plus 50
 for a thumbnail.

@@ -1,17 +1,21 @@
 # Aaron YouTube Uploader
 
-First of all, I stole most of this from other repos. I'm afraid I've lost where I got most of
-since I was just frantically searching for a way to upload videos, though. If I figure out
-where I got it, credit will be given!
+I post railfan Shorts to [Ron Con Rails](https://ronconrails.com) most days, and uploading them one
+at a time by hand got old. These scripts upload a batch of videos from a YAML file, spread them out
+one a day, and keep me from posting the same clip twice. It started from Google's upload sample,
+but there's not much of that left.
 
 # Summary
 
-Two scripts that share one sign-in:
+Three scripts that share one sign-in, plus one that never touches YouTube:
 
-- `aaron_uploader.py` uploads the videos listed in a YAML file (filename, title, description, tags,
-  schedule, etc.).
-- `draft_updater.py` changes the details of videos that are already on YouTube, such as a title,
-  description, tags, or the publish date and time.
+- `uploader.py` uploads the videos listed in a YAML file (filename, title, description, tags,
+  thumbnail, schedule, etc.), skips anything already on the channel, and can schedule a batch to
+  go public one per day.
+- `updater.py` changes the details of videos that are already on YouTube, such as a title,
+  description, tags, thumbnail, or the publish date and time.
+- `upcoming.py` shows what's scheduled to go public, day by day, and which days are open.
+- `mark_published.py` (macOS) tags uploaded files in Finder. It only reads the upload log.
 
 # Setup
 
@@ -92,9 +96,9 @@ videos:
 Then:
 
 ```
-python aaron_uploader.py --dry-run           # check the file and the channel; nothing uploaded
-python aaron_uploader.py                     # upload video_summary.yml
-python aaron_uploader.py --vids other.yml    # upload a different file
+python uploader.py --dry-run           # check the file and the channel; nothing uploaded
+python uploader.py                     # upload video_summary.yml
+python uploader.py --vids other.yml    # upload a different file
 ```
 
 **Finding files in dated folders.** Give just the file name and the uploader finds it in `video_dir`
@@ -154,6 +158,54 @@ The draft updater works the same way: it reads every video and shows all changes
 any change makes a video more visible or schedules it (`--yes` to skip), then saves. Retitling a
 public video or making a video private doesn't ask.
 
+## Scheduling a week of Shorts
+
+Add a `schedule:` block to the YAML and leave `publishAt` off the videos:
+
+```yaml
+video_dir: "~/Library/CloudStorage/Dropbox/Video/Finals"
+schedule:
+  time: "13:00"          # local time each one goes public
+  start: 2026-11-22      # optional; defaults to tomorrow
+videos:
+  - filename: "A6 Departs 20260520.mov"
+    title: "..."
+  - filename: "BNSF 674 yard job 20260520.mov"
+    title: "..."
+```
+
+Each video gets the next **open day**: a day with no Short already scheduled on the channel,
+including ones you scheduled in Studio. Long-form videos don't take up a day. The uploader prints
+the plan before anything happens:
+
+```
+Scheduling 2 videos, one per open day at 1:00 PM:
+  Sun Nov 22  A6 Departs 20260520.mov: "BNSF Helps the California Zephyr ..."
+  Mon Nov 23  (taken: "MARTA CQ400 New Railcar at Five Points 20260601")
+  Tue Nov 24  BNSF 674 yard job 20260520.mov: "BNSF 674 Sansa Fe Pulling a Yard Job ..."
+```
+
+A video with its own `publishAt` keeps it (and claims that day); `skipSchedule: true` leaves a
+video out of the schedule. Days are assigned in YAML order. Run `--dry-run` first to see the plan.
+To move something later, change its `publishAt` with the updater.
+
+## What's scheduled: upcoming.py
+
+```
+python upcoming.py              # next 14 days
+python upcoming.py --days 30
+```
+
+```
+Scheduled to go public, Sat Nov 21 through Fri Dec 4:
+  Sat Nov 21  open
+  Sun Nov 22   1:00 PM  Short  "BNSF Helps the California Zephyr ..."  https://youtu.be/...
+  Mon Nov 23   1:00 PM  Short  "MARTA CQ400 New Railcar at Five Points 20260601"  https://youtu.be/...
+  Tue Nov 24  open
+  ...
+2 Shorts scheduled, 12 open days.
+```
+
 # The Updater
 
 This script updates the details of videos that are already uploaded. I've been uploading videos via
@@ -178,8 +230,8 @@ videos:
 ```
 
 ```
-python draft_updater.py --dry-run    # shows old -> new for each change, saves nothing
-python draft_updater.py
+python updater.py --dry-run    # shows old -> new for each change, saves nothing
+python updater.py
 ```
 
 It reads each video's current details first and only changes the fields you gave, so tags,
@@ -199,7 +251,7 @@ python3 mark_published.py                  # tag
 python3 mark_published.py --keep-approved  # add Published, leave Approved alone
 ```
 
-Run it right after an upload (`python aaron_uploader.py; python3 mark_published.py`), or have
+Run it right after an upload (`python uploader.py; python3 mark_published.py`), or have
 launchd run it every 6 hours and at login:
 
 ```
@@ -240,3 +292,7 @@ python -m pytest tests
 ```
 
 The tests use a fake YouTube service, so they need no network or sign-in.
+
+# License
+
+MIT. See [LICENSE](LICENSE).

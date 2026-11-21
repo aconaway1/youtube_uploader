@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tag uploaded video files in Finder.
 
-Reads upload_log.json (written by aaron_uploader.py) and, for every file the
+Reads upload_log.json (written by uploader.py) and, for every file the
 log says was uploaded, adds the "Published" tag and removes the "Approved for
 Publishing" tag. Files that are already tagged are left alone, so it's safe
 to run as often as you like (e.g. from launchd every few hours).
@@ -83,7 +83,7 @@ def retag(tags, add, add_color, remove):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--log", default=UPLOAD_LOG, help="upload log from aaron_uploader.py")
+    parser.add_argument("--log", default=UPLOAD_LOG, help="upload log from uploader.py")
     parser.add_argument("--dry-run", action="store_true", help="show changes without making them")
     parser.add_argument("--keep-approved", action="store_true",
                         help=f"don't remove the '{APPROVED_TAG}' tag")

@@ -4,9 +4,9 @@ Every entry is validated before anything is uploaded. Each successful upload
 is written to the upload log right away, so a rerun skips videos that already
 went up instead of uploading them twice.
 
-    python aaron_uploader.py                    # uses video_summary.yml
-    python aaron_uploader.py --vids batch.yml
-    python aaron_uploader.py --dry-run          # validate only, no sign-in
+    python uploader.py                    # uses video_summary.yml
+    python uploader.py --vids batch.yml
+    python uploader.py --dry-run          # validate only, no sign-in
 """
 import argparse
 import datetime

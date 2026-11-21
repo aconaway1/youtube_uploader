@@ -412,9 +412,9 @@ def thumbnail_error_message(e):
     reason = http_error_reason(e)
     if e.resp.status == 403:
         return ("not allowed (403). Custom thumbnails need a verified channel: "
-                "check youtube.com/verify, then retry with draft_updater.py")
+                "check youtube.com/verify, then retry with updater.py")
     if reason == "uploadRateLimitExceeded":
-        return "too many thumbnails uploaded recently (429); retry later with draft_updater.py"
+        return "too many thumbnails uploaded recently (429); retry later with updater.py"
     if reason == "invalidImage":
         return "YouTube rejected the image (invalidImage)"
     return f"HTTP {e.resp.status} {reason}".strip()
