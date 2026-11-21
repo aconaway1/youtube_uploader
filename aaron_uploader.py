@@ -180,8 +180,14 @@ def main(argv=None, youtube=None):
     parser.add_argument("--vids", default=VIDEOS_FILE, help="YAML file of videos to upload")
     parser.add_argument("--log", default=UPLOAD_LOG, help="upload log (JSON)")
     parser.add_argument("--dry-run", action="store_true", help="validate the file and stop")
+    parser.add_argument("--allow-duplicate", action="append", default=[], metavar="FILENAME",
+                        help="upload this file even though it looks like a duplicate "
+                             "(repeat for more files)")
     parser.add_argument("--force", action="store_true",
-                        help="upload even if the upload log says a file already went up")
+                        help="upload every file even if it looks like a duplicate")
+    parser.add_argument("--no-channel-check", action="store_true",
+                        help="skip checking the channel for duplicates (the upload log is "
+                             "still checked); lets --dry-run work without signing in")
     parser.add_argument("--thumbnail-wait", type=int, default=900, metavar="SECONDS",
                         help="how long to wait for processing before setting thumbnails "
                              "(default 900)")
@@ -203,22 +209,66 @@ def main(argv=None, youtube=None):
             bad += 1
         else:
             jobs.append(job)
+    seen = {}
+    for job in jobs:
+        key = log_key(job["path"])
+        if key in seen:
+            print(f"ERROR {job['filename']}: listed twice in {args.vids}")
+            bad += 1
+        seen[key] = job
+    allowed = {os.path.basename(a).casefold() for a in args.allow_duplicate}
+    unknown = allowed - {os.path.basename(j["filename"]).casefold() for j in jobs}
+    for name in sorted(unknown):
+        print(f"ERROR --allow-duplicate {name}: not in {args.vids}")
+        bad += 1
     if bad:
         print(f"\n{bad} {'entry needs' if bad == 1 else 'entries need'} fixing. Nothing was uploaded.")
         return 2
 
+    index = None
+    if not args.no_channel_check:
+        youtube = youtube or yt.get_youtube()
+        print("Checking the channel for duplicates...")
+        try:
+            index = yt.DuplicateIndex(yt.channel_videos(youtube))
+        except HttpError as e:
+            print(f"Couldn't read the channel's videos: HTTP {e.resp.status} "
+                  f"{yt.http_error_reason(e)}. Nothing was uploaded.\n"
+                  "Rerun, or use --no-channel-check to rely on the upload log only.")
+            return 1
+        print(f"  {index.count} videos on the channel.\n")
+
     log = load_log(args.log)
     todo, thumbs = [], []  # thumbs: [(job, video_id)] still needing a thumbnail
+    dupes_skipped = 0
     for job in jobs:
         prev = log.get(log_key(job["path"]))
-        if prev and not args.force:
-            print(f"SKIP {job['filename']}: already uploaded as {prev['video_id']} "
-                  f"on {prev['uploaded_at']} (use --force to upload again)")
-            if job["thumbnail"] and prev.get("thumbnail_status") != "set":
-                print("     thumbnail not set yet; will retry it")
-                thumbs.append((job, prev["video_id"]))
-        else:
+        reasons = []
+        if prev:
+            reasons.append(f"already uploaded by this tool as https://youtu.be/{prev['video_id']} "
+                           f"on {prev['uploaded_at'][:10]}")
+        if index:
+            reasons += [r for r in index.matches(job["filename"], job["body"]["snippet"]["title"])
+                        if not prev or prev["video_id"] not in r]
+
+        if not reasons:
             todo.append(job)
+            continue
+        if args.force or os.path.basename(job["filename"]).casefold() in allowed:
+            print(f"DUPLICATE {job['filename']}: uploading anyway as requested")
+            for r in reasons:
+                print(f"     {r}")
+            todo.append(job)
+            continue
+
+        dupes_skipped += 1
+        print(f"DUPLICATE {job['filename']}: skipped")
+        for r in reasons:
+            print(f"     {r}")
+        print(f"     To upload it anyway: --allow-duplicate \"{job['filename']}\"")
+        if prev and job["thumbnail"] and prev.get("thumbnail_status") != "set":
+            print("     Its thumbnail isn't set yet; retrying that.")
+            thumbs.append((job, prev["video_id"]))
 
     if args.dry_run:
         for job in todo:
@@ -227,11 +277,11 @@ def main(argv=None, youtube=None):
             thumb = ", + thumbnail" if job["thumbnail"] else ""
             print(f"OK   {job['filename']}: \"{job['body']['snippet']['title']}\" "
                   f"({s['privacyStatus']}{when}{thumb})")
-        print(f"\nDry run: {len(todo)} to upload, "
+        print(f"\nDry run: {len(todo)} to upload, {dupes_skipped} duplicate(s) skipped, "
               f"{len(thumbs)} thumbnail retr{'y' if len(thumbs) == 1 else 'ies'}, nothing sent.")
         return 0
     if not todo and not thumbs:
-        print("Nothing to upload.")
+        print("\nNothing to upload.")
         return 0
 
     youtube = youtube or yt.get_youtube()
@@ -254,6 +304,7 @@ def main(argv=None, youtube=None):
             continue
 
         video_id = response["id"]
+        earlier = log.get(log_key(job["path"]))
         log[log_key(job["path"])] = {
             "video_id": video_id,
             "title": job["body"]["snippet"]["title"],
@@ -261,6 +312,9 @@ def main(argv=None, youtube=None):
             "privacy_status": response.get("status", {}).get("privacyStatus"),
             "size": os.path.getsize(job["path"]),
         }
+        if earlier:  # an allowed duplicate: keep the record of the earlier upload(s)
+            entry = log[log_key(job["path"])]
+            entry["previous_uploads"] = earlier.pop("previous_uploads", []) + [earlier]
         save_log(args.log, log)
         done.append(job)
         print(f"  Uploaded: https://youtu.be/{video_id}")

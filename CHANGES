@@ -11,8 +11,11 @@ Version 0.3
   reopen the browser instead of failing
 - Uploader: `--vids` now works (it was ignored)
 - Uploader: validates every entry before uploading anything; missing filename no longer crashes
-- Uploader: records each upload in `upload_log.json` and skips those files on rerun
-  (`--force` overrides), so a failed batch can be rerun without duplicates
+- Uploader: records each upload in `upload_log.json` and skips those files on rerun,
+  so a failed batch can be rerun without duplicates
+- Uploader: checks the channel for videos with the same original file name or title
+  and skips them with a warning; `--allow-duplicate FILE` (repeatable) or `--force`
+  uploads anyway, `--no-channel-check` skips the check
 - Uploader: one failed video no longer aborts the batch; quota/limit errors stop it
 - Uploader: sends `selfDeclaredMadeForKids: false` (was the read-only `madeForKids: True`)
 - Uploader: supports `publishAt`, `recordingDate`, `madeForKids`, `language`; privacy

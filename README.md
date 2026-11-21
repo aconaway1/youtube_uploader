@@ -92,7 +92,7 @@ videos:
 Then:
 
 ```
-python aaron_uploader.py --dry-run           # check the file; no sign-in, nothing uploaded
+python aaron_uploader.py --dry-run           # check the file and the channel; nothing uploaded
 python aaron_uploader.py                     # upload video_summary.yml
 python aaron_uploader.py --vids other.yml    # upload a different file
 ```
@@ -104,7 +104,16 @@ What it does:
   of what to fix.
 - **Remembers what it uploaded.** Each successful upload is written to `upload_log.json` right away,
   with the video ID. Running the same YAML again skips those files, so a run that fails partway
-  can just be rerun. `--force` uploads a file again anyway.
+  can just be rerun.
+- **Checks the channel for duplicates.** Before uploading, it reads your channel's video list and
+  skips any file whose original file name or title (ignoring case and spacing) matches a video
+  already there, including ones uploaded by hand in Studio. Skipped files are listed with a link to
+  the matching video; the rest of the batch still uploads.
+  - `--allow-duplicate "file.mov"` uploads that file anyway (repeat for more files).
+  - `--force` uploads every file regardless.
+  - `--no-channel-check` skips the channel check (the upload log is still checked); handy for a
+    `--dry-run` without signing in.
+  - The check costs about 1 quota unit per 25 videos on the channel.
 - **Keeps going when one video fails**, and reports the totals at the end. Errors that will hit every
   remaining video (out of quota, upload limit) stop the run.
 - **Sets thumbnails after processing.** YouTube only accepts a thumbnail once the video has finished
@@ -191,7 +200,8 @@ You get 10,000 units a day for most calls, and uploads have their own limit of 1
 | Update a video (`videos.update`) | 50 units |
 | Set a thumbnail (`thumbnails.set`) | 50 units |
 
-So the uploader costs 1 unit per video, plus about 51 for a thumbnail (a few 1-unit checks while
+So the uploader costs 1 unit per video, plus about 1 unit per 25 channel videos for the duplicate
+check, plus about 51 for a thumbnail (a few 1-unit checks while
 it waits for processing, then the thumbnail). The updater costs 51 units per video, plus 50 for a
 thumbnail. See
 [this page](https://developers.google.com/youtube/v3/determine_quota_cost) for the full list.

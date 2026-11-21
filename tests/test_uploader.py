@@ -48,6 +48,7 @@ class FakeVideos:
         self.current = current or {}
         # processing: {video_id: [status on 1st poll, 2nd poll, ...]} (last one repeats)
         self.processing = {k: list(v) for k, v in (processing or {}).items()}
+        self.files = {}
 
     def insert(self, part, body, media_body):
         self.inserted.append((part, body))
@@ -57,6 +58,10 @@ class FakeVideos:
         self.list_calls += 1
         items = []
         for vid in id.split(","):
+            if part == "fileDetails":
+                if vid in self.files:
+                    items.append({"id": vid, "fileDetails": {"fileName": self.files[vid]}})
+                continue
             if vid in self.current:
                 items.append(self.current[vid])
             elif vid in self.processing:
@@ -88,16 +93,48 @@ class FakeThumbnails:
         return Req()
 
 
+class FakeChannel:
+    """channels/playlistItems for a channel with `existing` videos [{id, title, fileName}]."""
+
+    def __init__(self, existing, page_size=2):
+        self.existing = existing
+        self.page_size = page_size
+        self.pages_read = 0
+
+    def channels_list(self, part, mine):
+        return FakeRequest([{"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "UU1"}}}]}])
+
+    def playlist_list(self, part, playlistId, maxResults, pageToken=None):
+        assert playlistId == "UU1"
+        start = int(pageToken or 0)
+        chunk = self.existing[start:start + self.page_size]
+        resp = {"items": [{"snippet": {"title": v["title"], "resourceId": {"videoId": v["id"]}}}
+                          for v in chunk]}
+        if start + self.page_size < len(self.existing):
+            resp["nextPageToken"] = str(start + self.page_size)
+        self.pages_read += 1
+        return FakeRequest([resp])
+
+
 class FakeYouTube:
-    def __init__(self, thumbnail_results=None, **kw):
+    def __init__(self, thumbnail_results=None, existing=None, **kw):
         self._videos = FakeVideos(**kw)
         self._thumbs = FakeThumbnails(thumbnail_results)
+        self.channel = FakeChannel(existing or [])
+        for v in existing or []:
+            self._videos.files[v["id"]] = v.get("fileName", "")
 
     def videos(self):
         return self._videos
 
     def thumbnails(self):
         return self._thumbs
+
+    def channels(self):
+        return type("C", (), {"list": lambda _s, **k: self.channel.channels_list(**k)})()
+
+    def playlistItems(self):
+        return type("P", (), {"list": lambda _s, **k: self.channel.playlist_list(**k)})()
 
 
 @pytest.fixture
@@ -192,7 +229,7 @@ def test_resumable_upload_gives_up():
 
 def test_vids_argument_is_used(workdir, capsys):
     custom = write_yaml(workdir / "custom.yml", 'video_dir: vids\nvideos:\n  - filename: a.mov\n    title: "From custom"\n')
-    assert aaron_uploader.main(["--vids", custom, "--dry-run", "--log", str(workdir / "log.json")]) == 0
+    assert aaron_uploader.main(["--vids", custom, "--dry-run", "--no-channel-check", "--log", str(workdir / "log.json")]) == 0
     assert "From custom" in capsys.readouterr().out
 
 
@@ -244,7 +281,7 @@ def test_upload_log_prevents_reupload_after_partial_failure(workdir, capsys):
     fake2 = FakeYouTube(insert_results=[{"id": "IDB"}])
     assert aaron_uploader.main(["--vids", f, "--log", log], youtube=fake2) == 0
     assert [b["snippet"]["title"] for _, b in fake2.videos().inserted] == ["B"]
-    assert "SKIP a.mov" in capsys.readouterr().out
+    assert "DUPLICATE a.mov: skipped" in capsys.readouterr().out
 
 
 def test_quota_error_stops_batch(workdir):
@@ -258,7 +295,7 @@ def test_quota_error_stops_batch(workdir):
 def test_video_dir_relative_to_yaml_and_tilde(workdir, monkeypatch):
     monkeypatch.setenv("HOME", str(workdir))
     f = write_yaml(workdir / "v.yml", "video_dir: '~/vids'\nvideos:\n  - {filename: a.mov, title: A}\n")
-    assert aaron_uploader.main(["--vids", f, "--dry-run", "--log", str(workdir / "l.json")]) == 0
+    assert aaron_uploader.main(["--vids", f, "--dry-run", "--no-channel-check", "--log", str(workdir / "l.json")]) == 0
 
 
 # ---------------------------------------------------------------- updater
@@ -341,7 +378,7 @@ def test_thumbnail_validation(thumbdir, capsys):
     f = write_yaml(thumbdir / "v.yml", "video_dir: vids\nvideos:\n"
                    "  - {filename: a.mov, title: A, thumbnail: nope.jpg}\n"
                    "  - {filename: b.mov, title: B, thumbnail: b.gif}\n")
-    assert aaron_uploader.main(["--vids", f, "--dry-run", "--log", str(thumbdir / "l.json")]) == 2
+    assert aaron_uploader.main(["--vids", f, "--dry-run", "--no-channel-check", "--log", str(thumbdir / "l.json")]) == 2
     out = capsys.readouterr().out
     assert "thumbnail not found" in out and "must be .jpg or .png" in out
 
@@ -425,3 +462,112 @@ def test_updater_thumbnail_waits_for_processing(tmp_path):
     fake = FakeYouTube(current={"VID": dict(CURRENT, processingDetails={"processingStatus": "processing"})})
     assert draft_updater.main(["--vids", f], youtube=fake) == 1
     assert fake.thumbnails().set_calls == [] and fake.videos().updated == []
+
+
+# ---------------------------------------------------------------- duplicates vs channel
+
+EXISTING = [
+    {"id": "OLD1", "title": "BNSF Tankers Passing GBB Station 20260520", "fileName": "A.MOV"},
+    {"id": "OLD2", "title": "Big Boy at West Chicago", "fileName": "IMG_0001.mov"},
+    {"id": "OLD3", "title": "Ancient video", "fileName": ""},
+]
+
+
+def dup_yaml(workdir):
+    return write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                      "  - {filename: a.mov, title: A Wave from a BNSF Tanker Train 20260520}\n"
+                      "  - {filename: b.mov, title: '  big boy AT west   chicago '}\n"
+                      "  - {filename: c.mov, title: Brand new}\n")
+
+
+def test_channel_duplicates_are_skipped(workdir, capsys):
+    f = dup_yaml(workdir)
+    fake = FakeYouTube(existing=EXISTING, insert_results=[{"id": "NEWC"}])
+    assert aaron_uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake) == 0
+    assert [b["snippet"]["title"] for _, b in fake.videos().inserted] == ["Brand new"]
+    out = capsys.readouterr().out
+    assert "DUPLICATE a.mov: skipped" in out and "same file name as https://youtu.be/OLD1" in out
+    assert "DUPLICATE b.mov: skipped" in out and "same title as https://youtu.be/OLD2" in out
+    assert '--allow-duplicate "a.mov"' in out
+    assert "3 videos on the channel" in out
+    assert fake.channel.pages_read == 2  # paged through the uploads list
+
+
+def test_allow_duplicate_for_one_file(workdir, capsys):
+    f = dup_yaml(workdir)
+    fake = FakeYouTube(existing=EXISTING, insert_results=[{"id": "NEWA"}, {"id": "NEWC"}])
+    assert aaron_uploader.main(["--vids", f, "--log", str(workdir / "l.json"),
+                                "--allow-duplicate", "a.mov"], youtube=fake) == 0
+    assert [b["snippet"]["title"] for _, b in fake.videos().inserted] == \
+        ["A Wave from a BNSF Tanker Train 20260520", "Brand new"]
+    out = capsys.readouterr().out
+    assert "DUPLICATE a.mov: uploading anyway" in out and "DUPLICATE b.mov: skipped" in out
+
+
+def test_force_allows_all_duplicates(workdir):
+    f = dup_yaml(workdir)
+    fake = FakeYouTube(existing=EXISTING, insert_results=[{"id": "1"}, {"id": "2"}, {"id": "3"}])
+    assert aaron_uploader.main(["--vids", f, "--log", str(workdir / "l.json"), "--force"],
+                               youtube=fake) == 0
+    assert len(fake.videos().inserted) == 3
+
+
+def test_allow_duplicate_typo_is_an_error(workdir, capsys):
+    f = dup_yaml(workdir)
+    fake = FakeYouTube(existing=EXISTING)
+    assert aaron_uploader.main(["--vids", f, "--log", str(workdir / "l.json"),
+                                "--allow-duplicate", "aa.mov"], youtube=fake) == 2
+    assert "--allow-duplicate aa.mov: not in" in capsys.readouterr().out
+    assert fake.videos().inserted == []
+
+
+def test_same_file_listed_twice_is_an_error(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                   "  - {filename: a.mov, title: One}\n  - {filename: a.mov, title: Two}\n")
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--dry-run",
+                                "--log", str(workdir / "l.json")]) == 2
+    assert "listed twice" in capsys.readouterr().out
+
+
+def test_dry_run_reports_channel_duplicates(workdir, capsys):
+    f = dup_yaml(workdir)
+    fake = FakeYouTube(existing=EXISTING)
+    assert aaron_uploader.main(["--vids", f, "--log", str(workdir / "l.json"), "--dry-run"],
+                               youtube=fake) == 0
+    out = capsys.readouterr().out
+    assert "OK   c.mov" in out and "1 to upload, 2 duplicate(s) skipped" in out
+    assert fake.videos().inserted == []
+
+
+def test_log_and_channel_match_reported_once(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n  - {filename: a.mov, title: A}\n")
+    log = str(workdir / "l.json")
+    aaron_uploader.main(["--vids", f, "--log", log, "--no-channel-check"],
+                        youtube=FakeYouTube(insert_results=[{"id": "IDA"}]))
+    capsys.readouterr()
+    fake = FakeYouTube(existing=[{"id": "IDA", "title": "A", "fileName": "a.mov"}])
+    aaron_uploader.main(["--vids", f, "--log", log], youtube=fake)
+    out = capsys.readouterr().out
+    assert "already uploaded by this tool as https://youtu.be/IDA" in out
+    assert "same file name" not in out and "same title" not in out
+
+
+def test_reupload_keeps_previous_log_entry(workdir):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n  - {filename: a.mov, title: A}\n")
+    log = str(workdir / "l.json")
+    aaron_uploader.main(["--vids", f, "--log", log, "--no-channel-check"],
+                        youtube=FakeYouTube(insert_results=[{"id": "FIRST"}]))
+    aaron_uploader.main(["--vids", f, "--log", log, "--no-channel-check", "--allow-duplicate", "a.mov"],
+                        youtube=FakeYouTube(insert_results=[{"id": "SECOND"}]))
+    entry = json.load(open(log)).popitem()[1]
+    assert entry["video_id"] == "SECOND"
+    assert [p["video_id"] for p in entry["previous_uploads"]] == ["FIRST"]
+
+
+def test_channel_read_error_uploads_nothing(workdir, capsys):
+    f = dup_yaml(workdir)
+    fake = FakeYouTube()
+    fake.channel.channels_list = lambda part, mine: FakeRequest([http_error(403, "forbidden")])
+    assert aaron_uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake) == 1
+    assert fake.videos().inserted == []
+    assert "--no-channel-check" in capsys.readouterr().out

@@ -320,6 +320,72 @@ def wait_for_processing(youtube, video_ids, timeout, interval=20, sleep=None, cl
     return statuses
 
 
+# --------------------------------------------------------------------------
+# Duplicate check against the channel
+# --------------------------------------------------------------------------
+
+def normalize_title(title):
+    return " ".join(str(title).split()).casefold()
+
+
+def channel_videos(youtube):
+    """Every video on the signed-in channel: [{id, title, fileName}].
+
+    fileName is the name of the file originally uploaded (owner-only data;
+    empty for some very old videos). Costs 1 quota unit per 50 videos for the
+    list, plus 1 per 50 for the file names, plus 1 to find the uploads list.
+    """
+    channels = youtube.channels().list(part="contentDetails", mine=True).execute().get("items", [])
+    if not channels:
+        return []
+    uploads = channels[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+    videos, token = [], None
+    while True:
+        resp = youtube.playlistItems().list(part="snippet", playlistId=uploads,
+                                            maxResults=50, pageToken=token).execute()
+        for item in resp.get("items", []):
+            sn = item["snippet"]
+            videos.append({"id": sn["resourceId"]["videoId"], "title": sn.get("title", "")})
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+
+    for i in range(0, len(videos), 50):
+        chunk = videos[i:i + 50]
+        resp = youtube.videos().list(part="fileDetails",
+                                     id=",".join(v["id"] for v in chunk)).execute()
+        names = {it["id"]: it.get("fileDetails", {}).get("fileName", "")
+                 for it in resp.get("items", [])}
+        for v in chunk:
+            v["fileName"] = names.get(v["id"], "")
+    return videos
+
+
+class DuplicateIndex:
+    """Look up existing channel videos by original filename or title."""
+
+    def __init__(self, videos):
+        self.by_file, self.by_title = {}, {}
+        for v in videos:
+            if v.get("fileName"):
+                self.by_file.setdefault(os.path.basename(v["fileName"]).casefold(), []).append(v)
+            if v.get("title"):
+                self.by_title.setdefault(normalize_title(v["title"]), []).append(v)
+        self.count = len(videos)
+
+    def matches(self, filename, title):
+        """Reasons this upload looks like a duplicate, e.g. ['same file name as abc123 "Title"']."""
+        reasons, seen = [], set()
+        for v in self.by_file.get(os.path.basename(filename).casefold(), []):
+            seen.add(v["id"])
+            reasons.append(f"same file name as https://youtu.be/{v['id']} \"{v['title']}\"")
+        for v in self.by_title.get(normalize_title(title), []):
+            if v["id"] not in seen:
+                reasons.append(f"same title as https://youtu.be/{v['id']}")
+        return reasons
+
+
 def check_tags(tags, problems):
     n = tags_length(tags)
     if n > MAX_TAGS_CHARS:
