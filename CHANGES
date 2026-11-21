@@ -16,6 +16,10 @@ Version 0.3
 - Uploader: checks the channel for videos with the same original file name or title
   and skips them with a warning; `--allow-duplicate FILE` (repeatable) or `--force`
   uploads anyway, `--no-channel-check` skips the check
+- Uploader: a logged upload whose video was deleted from YouTube is no longer
+  treated as a duplicate; deleted videos still in the uploads list are ignored
+- Examples list every supported field, with defaults and limits; a test keeps
+  them in sync with the code
 - Uploader: one failed video no longer aborts the batch; quota/limit errors stop it
 - Uploader: sends `selfDeclaredMadeForKids: false` (was the read-only `madeForKids: True`)
 - Uploader: supports `publishAt`, `recordingDate`, `madeForKids`, `language`; privacy

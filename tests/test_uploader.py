@@ -122,7 +122,8 @@ class FakeYouTube:
         self._thumbs = FakeThumbnails(thumbnail_results)
         self.channel = FakeChannel(existing or [])
         for v in existing or []:
-            self._videos.files[v["id"]] = v.get("fileName", "")
+            if not v.get("deleted"):  # deleted videos are still in the uploads list, briefly
+                self._videos.files[v["id"]] = v.get("fileName", "")
 
     def videos(self):
         return self._videos
@@ -278,7 +279,9 @@ def test_upload_log_prevents_reupload_after_partial_failure(workdir, capsys):
     assert sorted(v["video_id"] for v in saved.values()) == ["IDA", "IDC"]
 
     # Rerun: only b is attempted.
-    fake2 = FakeYouTube(insert_results=[{"id": "IDB"}])
+    on_channel = [{"id": "IDA", "title": "A", "fileName": "a.mov"},
+                  {"id": "IDC", "title": "C", "fileName": "c.mov"}]
+    fake2 = FakeYouTube(insert_results=[{"id": "IDB"}], existing=on_channel)
     assert aaron_uploader.main(["--vids", f, "--log", log], youtube=fake2) == 0
     assert [b["snippet"]["title"] for _, b in fake2.videos().inserted] == ["B"]
     assert "DUPLICATE a.mov: skipped" in capsys.readouterr().out
@@ -413,16 +416,17 @@ def test_thumbnail_pending_is_retried_on_rerun(thumbdir, monkeypatch, capsys):
     assert json.load(open(log)).popitem()[1]["thumbnail_status"].startswith("pending")
 
     # Rerun: no re-upload, thumbnail gets set.
-    fake2 = FakeYouTube(processing={"IA": ["succeeded"]})
+    on_channel = [{"id": "IA", "title": "A", "fileName": "a.mov"}]
+    fake2 = FakeYouTube(processing={"IA": ["succeeded"]}, existing=on_channel)
     assert aaron_uploader.main(["--vids", f, "--log", log], youtube=fake2) == 0
     assert fake2.videos().inserted == []
     assert [v for v, _, _ in fake2.thumbnails().set_calls] == ["IA"]
     assert json.load(open(log)).popitem()[1]["thumbnail_status"] == "set"
 
     # Third run: nothing to do.
-    fake3 = FakeYouTube()
+    fake3 = FakeYouTube(existing=on_channel)
     assert aaron_uploader.main(["--vids", f, "--log", log], youtube=fake3) == 0
-    assert fake3.thumbnails().set_calls == [] and fake3.videos().list_calls == 0
+    assert fake3.thumbnails().set_calls == [] and fake3.videos().inserted == []
 
 
 def test_thumbnail_forbidden_does_not_fail_upload(thumbdir, monkeypatch, capsys):
@@ -571,3 +575,84 @@ def test_channel_read_error_uploads_nothing(workdir, capsys):
     assert aaron_uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake) == 1
     assert fake.videos().inserted == []
     assert "--no-channel-check" in capsys.readouterr().out
+
+
+def test_deleted_video_in_log_is_not_a_duplicate(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n  - {filename: a.mov, title: A}\n")
+    log = str(workdir / "l.json")
+    aaron_uploader.main(["--vids", f, "--log", log, "--no-channel-check"],
+                        youtube=FakeYouTube(insert_results=[{"id": "GONE"}]))
+    capsys.readouterr()
+    # The video was deleted on YouTube; the channel no longer has it.
+    fake = FakeYouTube(existing=[{"id": "OTHER", "title": "x", "fileName": "x.mov"}],
+                       insert_results=[{"id": "NEW"}])
+    assert aaron_uploader.main(["--vids", f, "--log", log], youtube=fake) == 0
+    out = capsys.readouterr().out
+    assert "no longer on the channel" in out and "DUPLICATE" not in out
+    entry = json.load(open(log)).popitem()[1]
+    assert entry["video_id"] == "NEW" and entry["previous_uploads"][0]["video_id"] == "GONE"
+
+
+def test_deleted_video_still_in_uploads_list_is_ignored(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n  - {filename: a.mov, title: A}\n")
+    fake = FakeYouTube(existing=[{"id": "GONE", "title": "A", "fileName": "a.mov", "deleted": True}],
+                       insert_results=[{"id": "NEW"}])
+    assert aaron_uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake) == 0
+    out = capsys.readouterr().out
+    assert "DUPLICATE" not in out and "0 videos on the channel" in out
+
+
+def test_log_hit_without_channel_check_still_skips(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n  - {filename: a.mov, title: A}\n")
+    log = str(workdir / "l.json")
+    aaron_uploader.main(["--vids", f, "--log", log, "--no-channel-check"],
+                        youtube=FakeYouTube(insert_results=[{"id": "IDA"}]))
+    capsys.readouterr()
+    fake = FakeYouTube()
+    aaron_uploader.main(["--vids", f, "--log", log, "--no-channel-check"], youtube=fake)
+    assert "DUPLICATE a.mov: skipped" in capsys.readouterr().out and fake.videos().inserted == []
+
+
+# ---------------------------------------------------------------- examples stay complete
+
+EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
+UPLOADER_KEYS = {"filename", "title", "description", "keywords", "categoryId", "privacyStatus",
+                 "publishAt", "recordingDate", "madeForKids", "language", "thumbnail"}
+UPDATER_KEYS = {"url", "title", "description", "keywords", "categoryId", "language",
+                "privacyStatus", "publishAt", "recordingDate", "madeForKids", "thumbnail"}
+
+
+def _keys_in_example(path):
+    import re
+    text = open(path).read()
+    return set(re.findall(r"^\s+(?:- |# )?([A-Za-z]+):", text, re.M))
+
+
+def test_uploader_example_shows_every_field_and_is_valid():
+    path = os.path.join(EXAMPLES, "video_summary.example.yml")
+    assert UPLOADER_KEYS <= _keys_in_example(path)
+    data = yt.load_yaml(path)
+    for vid in data["videos"]:
+        _, problems = aaron_uploader.build_job(vid, "/nonexistent")
+        problems = [p for p in problems if "not found" not in p and "in the past" not in p]
+        assert problems == []
+
+
+def test_updater_example_shows_every_field_and_is_valid():
+    path = os.path.join(EXAMPLES, "draft_videos.example.yml")
+    assert UPDATER_KEYS <= _keys_in_example(path)
+    data = yt.load_yaml(path)
+    for vid in data["videos"]:
+        _, _, problems = draft_updater.parse_changes(vid, "/nonexistent")
+        problems = [p for p in problems if "not found" not in p and "in the past" not in p]
+        assert problems == []
+
+
+def test_code_reads_no_undocumented_keys():
+    """Every vid.get(...)/vid[...] key in the scripts must be in the key lists above."""
+    import re
+    for script, keys in (("aaron_uploader.py", UPLOADER_KEYS), ("draft_updater.py", UPDATER_KEYS)):
+        src = open(os.path.join(os.path.dirname(EXAMPLES), script)).read()
+        used = set(re.findall(r'vid(?:\.get\(|\[)"([A-Za-z]+)"', src))
+        used |= set(re.findall(r'"([A-Za-z]+)" in vid', src))
+        assert used <= keys, f"{script} reads {used - keys} but the example doesn't show it"

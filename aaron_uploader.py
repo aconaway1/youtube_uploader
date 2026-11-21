@@ -244,6 +244,10 @@ def main(argv=None, youtube=None):
     for job in jobs:
         prev = log.get(log_key(job["path"]))
         reasons = []
+        if prev and index is not None and prev["video_id"] not in index.ids:
+            print(f"NOTE {job['filename']}: its earlier upload https://youtu.be/{prev['video_id']} "
+                  "is no longer on the channel (deleted?), so it isn't treated as a duplicate")
+            prev = None
         if prev:
             reasons.append(f"already uploaded by this tool as https://youtu.be/{prev['video_id']} "
                            f"on {prev['uploaded_at'][:10]}")

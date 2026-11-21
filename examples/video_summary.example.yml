@@ -1,21 +1,42 @@
-# Copy to video_summary.yml and edit.
-# Only filename and title are required.
-video_dir: "~/Movies/Shorts"        # optional; relative paths are relative to this file
+# Uploader input: copy to video_summary.yml and edit.
+#   python aaron_uploader.py --dry-run
+#   python aaron_uploader.py
+#
+# Every field the uploader understands is shown below. Only filename and
+# title are required; delete any other line to use its default.
+
+# Folder holding the videos (and thumbnails). ~ works. A relative path is
+# relative to this YAML file. Default: the folder this file is in.
+video_dir: "~/Movies/Shorts"
+
 videos:
-  - filename: "BNSF 674 yard job 20260520.mov"
+  - filename: "BNSF 674 yard job 20260520.mov"   # REQUIRED. Relative to video_dir, or a full path
     title: "BNSF 674 Sansa Fe Pulling a Yard Job 20260520 #FreightTrain"
+                                                 # REQUIRED. Max 100 characters, no < or >
+
     # Use | (not >) so line breaks are kept exactly as written.
+    # Max 5000 bytes, no < or >.
     description: |
       Ex-Santa Fe warbonnet BNSF 674, with one replacement BNSF side panel, working the yard at Galesburg.
 
       #gbb #warbonnet #SantaFe
 
       Recorded 2026-05-20
+
     keywords: "BNSF 674, warbonnet, Santa Fe, Galesburg, yard job"
-    categoryId: "19"                # default "22"
-    privacyStatus: "private"        # public | private | unlisted; default private
-    publishAt: "2026-11-22 13:00"   # optional, local time; forces private until then
-    recordingDate: 2026-05-20       # optional
-    # madeForKids: false            # default false
-    # language: "en"                # default "en"
-    # thumbnail: "BNSF 674 thumb.jpg"  # .jpg/.png, relative to video_dir; set after processing
+                                     # Tags, comma-separated (a YAML list also works).
+                                     # 500 characters total
+    categoryId: "19"                 # Default "22" (People & Blogs). 19 = Travel & Events,
+                                     # 2 = Autos & Vehicles
+    privacyStatus: "private"         # public | private | unlisted. Default private
+    publishAt: "2027-01-15 13:00"    # Schedule, in this Mac's local time. Must be in the
+                                     # future; keeps the video private until then
+    recordingDate: 2026-05-20        # Shoot date: 2026-05-20 or 20260520
+    madeForKids: false               # Default false
+    language: "en"                   # Title/description and audio language. Default "en"
+    thumbnail: "BNSF 674 thumb.jpg"  # .jpg or .png, max 50 MB, relative to video_dir.
+                                     # Set once YouTube finishes processing the video
+
+  # A minimal entry:
+  - filename: "MARTA CQ400 Five Points 20260601.mov"
+    title: "MARTA CQ400 New Railcar at Five Points 20260601"

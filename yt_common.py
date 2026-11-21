@@ -351,6 +351,7 @@ def channel_videos(youtube):
         if not token:
             break
 
+    live = []
     for i in range(0, len(videos), 50):
         chunk = videos[i:i + 50]
         resp = youtube.videos().list(part="fileDetails",
@@ -358,8 +359,12 @@ def channel_videos(youtube):
         names = {it["id"]: it.get("fileDetails", {}).get("fileName", "")
                  for it in resp.get("items", [])}
         for v in chunk:
-            v["fileName"] = names.get(v["id"], "")
-    return videos
+            # videos.list leaves out deleted videos, even if the uploads list
+            # hasn't caught up with the deletion yet.
+            if v["id"] in names:
+                v["fileName"] = names[v["id"]]
+                live.append(v)
+    return live
 
 
 class DuplicateIndex:
@@ -367,6 +372,7 @@ class DuplicateIndex:
 
     def __init__(self, videos):
         self.by_file, self.by_title = {}, {}
+        self.ids = {v["id"] for v in videos}
         for v in videos:
             if v.get("fileName"):
                 self.by_file.setdefault(os.path.basename(v["fileName"]).casefold(), []).append(v)

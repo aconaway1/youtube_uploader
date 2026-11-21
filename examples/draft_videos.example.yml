@@ -1,15 +1,34 @@
-# Copy to draft_videos.yml and edit.
-# Only url is required. Fields you leave out are left as they are on YouTube.
+# Updater input: copy to draft_videos.yml and edit.
+#   python draft_updater.py --dry-run
+#   python draft_updater.py
+#
+# Every field the updater understands is shown below. Only url is required.
+# Fields you leave out are left as they are on YouTube.
+
 videos:
-  - url: "https://youtube.com/shorts/VIDEO_ID"
-    title: "New descriptive title 20260520"
+  - url: "https://youtube.com/shorts/VIDEO_ID"   # REQUIRED. Any YouTube link (youtu.be,
+                                                 # watch?v=, shorts/, ?si= share links)
+                                                 # or the bare video ID
+    title: "New descriptive title 20260520"      # Max 100 characters, no < or >
+
+    # Use | (not >) so line breaks are kept. Max 5000 bytes, no < or >.
     description: |
       First line is what people see in search.
 
       #gbb #galesburg
-    keywords: "BNSF, Galesburg"
-    publishAt: "2026-11-25 13:00"   # local time; schedules it (video stays private until then)
-    thumbnail: "thumbs/new.jpg"     # .jpg/.png, relative to this file
 
+    keywords: "BNSF, Galesburg"      # Replaces all existing tags
+    categoryId: "19"                 # 19 = Travel & Events, 22 = People & Blogs
+    language: "en"                   # Title/description and audio language
+    publishAt: "2027-01-15 13:00"    # Schedule, in this Mac's local time. Only for videos that
+                                     # have never been published; keeps it private until then
+    # privacyStatus: "unlisted"      # public | private | unlisted. Can't be combined with
+                                     # publishAt, so it's commented out here
+    recordingDate: 2026-05-20        # Shoot date: 2026-05-20 or 20260520
+    madeForKids: false
+    thumbnail: "thumbs/new.jpg"      # .jpg or .png, max 50 MB, relative to this file.
+                                     # The video must have finished processing
+
+  # Only the title changes on this one:
   - url: "https://youtu.be/VIDEO_ID?si=share-param-is-fine"
     title: "Only the title changes on this one"
