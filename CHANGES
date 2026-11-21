@@ -18,6 +18,11 @@ Version 0.3
   uploads anyway, `--no-channel-check` skips the check
 - Uploader: a logged upload whose video was deleted from YouTube is no longer
   treated as a duplicate; deleted videos still in the uploads list are ignored
+- Go-live safeguards (both scripts): plain-language visibility ("PUBLIC immediately",
+  "goes PUBLIC Sun Nov 22, 12:00 PM CST (in 1 day 3 hr)"); a y/N prompt before anything
+  public, unlisted or scheduled (`--yes` to skip; refuses when not in a terminal);
+  publishAt must be 15+ minutes away (`--min-lead`), re-checked before each upload.
+  The updater now reads and shows every change before saving any.
 - Examples list every supported field, with defaults and limits; a test keeps
   them in sync with the code
 - Uploader: one failed video no longer aborts the batch; quota/limit errors stop it

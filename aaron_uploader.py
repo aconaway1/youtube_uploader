@@ -21,6 +21,7 @@ import yt_common as yt
 
 VIDEOS_FILE = "video_summary.yml"
 UPLOAD_LOG = os.path.join(yt.HERE, "upload_log.json")
+MIN_SECONDS_AT_UPLOAD = 5 * 60  # re-checked just before each upload
 DEFAULT_CATEGORY = "22"  # People & Blogs; 19 = Travel & Events, 2 = Autos & Vehicles
 
 
@@ -50,7 +51,7 @@ def log_key(path):
 # Building the request
 # --------------------------------------------------------------------------
 
-def build_job(vid, video_dir):
+def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
     """Validate one YAML entry. Returns (job, problems)."""
     problems = []
     if not isinstance(vid, dict):
@@ -85,7 +86,7 @@ def build_job(vid, video_dir):
 
     if vid.get("publishAt"):
         try:
-            status["publishAt"] = yt.parse_publish_at(vid["publishAt"])
+            status["publishAt"] = yt.parse_publish_at(vid["publishAt"], min_lead)
         except ValueError as e:
             problems.append(str(e))
         if privacy != "private":
@@ -188,6 +189,12 @@ def main(argv=None, youtube=None):
     parser.add_argument("--no-channel-check", action="store_true",
                         help="skip checking the channel for duplicates (the upload log is "
                              "still checked); lets --dry-run work without signing in")
+    parser.add_argument("--yes", action="store_true",
+                        help="don't ask before uploading videos that will be public, unlisted "
+                             "or scheduled (for unattended runs)")
+    parser.add_argument("--min-lead", type=int, default=yt.DEFAULT_MIN_LEAD_MINUTES,
+                        metavar="MINUTES",
+                        help="publishAt must be at least this far in the future (default %(default)s)")
     parser.add_argument("--thumbnail-wait", type=int, default=900, metavar="SECONDS",
                         help="how long to wait for processing before setting thumbnails "
                              "(default 900)")
@@ -201,7 +208,7 @@ def main(argv=None, youtube=None):
 
     jobs, bad = [], 0
     for i, vid in enumerate(data["videos"], 1):
-        job, problems = build_job(vid, video_dir)
+        job, problems = build_job(vid, video_dir, args.min_lead)
         label = job["filename"] if job else f"entry {i}"
         for p in problems:
             print(f"ERROR {label}: {p}")
@@ -276,11 +283,9 @@ def main(argv=None, youtube=None):
 
     if args.dry_run:
         for job in todo:
-            s = job["body"]["status"]
-            when = f", publishes {s['publishAt']}" if "publishAt" in s else ""
             thumb = ", + thumbnail" if job["thumbnail"] else ""
-            print(f"OK   {job['filename']}: \"{job['body']['snippet']['title']}\" "
-                  f"({s['privacyStatus']}{when}{thumb})")
+            print(f"OK   {job['filename']}: \"{job['body']['snippet']['title']}\"\n"
+                  f"     {yt.visibility(job['body']['status'])}{thumb}")
         print(f"\nDry run: {len(todo)} to upload, {dupes_skipped} duplicate(s) skipped, "
               f"{len(thumbs)} thumbnail retr{'y' if len(thumbs) == 1 else 'ies'}, nothing sent.")
         return 0
@@ -288,10 +293,24 @@ def main(argv=None, youtube=None):
         print("\nNothing to upload.")
         return 0
 
+    live = [j for j in todo if yt.goes_live(j["body"]["status"])]
+    if live and not yt.confirm([f"{j['filename']}: \"{j['body']['snippet']['title']}\" -> "
+                                f"{yt.visibility(j['body']['status'])}" for j in live],
+                               assume_yes=args.yes):
+        print("Stopped. Nothing was uploaded.")
+        return 3
+
     youtube = youtube or yt.get_youtube()
     done, failed = [], []
     for n, job in enumerate(todo, 1):
         print(f"[{n}/{len(todo)}] {job['filename']}")
+        publish_at = job["body"]["status"].get("publishAt")
+        if publish_at and yt.seconds_until(publish_at) < MIN_SECONDS_AT_UPLOAD:
+            # Earlier uploads took long enough that this schedule is now too close.
+            print(f"  FAILED: scheduled for {yt.format_when(publish_at)}, too soon to upload "
+                  "safely now. Pick a later publishAt and rerun.")
+            failed.append(job)
+            continue
         try:
             response = upload(youtube, job)
         except HttpError as e:
@@ -322,6 +341,7 @@ def main(argv=None, youtube=None):
         save_log(args.log, log)
         done.append(job)
         print(f"  Uploaded: https://youtu.be/{video_id}")
+        print(f"  Visibility: {yt.visibility(response.get('status') or job['body']['status'])}")
         if job["thumbnail"]:
             thumbs.append((job, video_id))
 

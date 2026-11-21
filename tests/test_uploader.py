@@ -314,10 +314,10 @@ CURRENT = {
 }
 
 
-def run_updater(tmp_path, yaml_text, current=CURRENT, dry=False):
+def run_updater(tmp_path, yaml_text, current=CURRENT, dry=False, yes=True):
     f = write_yaml(tmp_path / "d.yml", yaml_text)
     fake = FakeYouTube(current={"VID": current})
-    argv = ["--vids", f] + (["--dry-run"] if dry else [])
+    argv = ["--vids", f] + (["--dry-run"] if dry else []) + (["--yes"] if yes else [])
     return draft_updater.main(argv, youtube=fake), fake.videos()
 
 
@@ -656,3 +656,128 @@ def test_code_reads_no_undocumented_keys():
         used = set(re.findall(r'vid(?:\.get\(|\[)"([A-Za-z]+)"', src))
         used |= set(re.findall(r'"([A-Za-z]+)" in vid', src))
         assert used <= keys, f"{script} reads {used - keys} but the example doesn't show it"
+
+
+
+# ---------------------------------------------------------------- go-live safeguards
+
+def in_minutes(m):
+    return (datetime.datetime.now() + datetime.timedelta(minutes=m)).strftime("%Y-%m-%d %H:%M")
+
+
+def test_publish_at_minimum_lead():
+    with pytest.raises(ValueError, match="less than 15 minutes"):
+        yt.parse_publish_at(in_minutes(5))
+    assert yt.parse_publish_at(in_minutes(20))
+    assert yt.parse_publish_at(in_minutes(5), min_lead_minutes=2)
+    with pytest.raises(ValueError, match="in the past"):
+        yt.parse_publish_at(in_minutes(-5), min_lead_minutes=0)
+
+
+def test_visibility_wording():
+    soon = (datetime.datetime.now().astimezone() + datetime.timedelta(days=1, hours=2, minutes=5)).isoformat()
+    v = yt.visibility({"privacyStatus": "private", "publishAt": soon})
+    assert v.startswith("private, goes PUBLIC ") and "(in 1 day 2 hr)" in v
+    assert yt.visibility({"privacyStatus": "public"}) == "PUBLIC immediately"
+    assert yt.visibility({"privacyStatus": "unlisted"}).startswith("UNLISTED")
+    assert yt.visibility({"privacyStatus": "private"}) == "private"
+    assert yt.goes_live({"privacyStatus": "unlisted"}) and not yt.goes_live({"privacyStatus": "private"})
+
+
+def golive_yaml(workdir):
+    return write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                      "  - {filename: a.mov, title: Pub, privacyStatus: public}\n"
+                      f"  - {{filename: b.mov, title: Sched, publishAt: '{in_minutes(60)}'}}\n"
+                      "  - {filename: c.mov, title: Priv}\n")
+
+
+def test_dry_run_spells_out_visibility(workdir, capsys):
+    f = golive_yaml(workdir)
+    aaron_uploader.main(["--vids", f, "--dry-run", "--no-channel-check", "--log", str(workdir / "l.json")])
+    out = capsys.readouterr().out
+    assert "PUBLIC immediately" in out and "goes PUBLIC" in out
+    assert "(in 1 hr)" in out or "(in 59 min)" in out
+
+
+def test_go_live_needs_confirmation_when_not_a_terminal(workdir, capsys):
+    f = golive_yaml(workdir)
+    fake = FakeYouTube(insert_results=[{"id": "1"}, {"id": "2"}, {"id": "3"}])
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--log", str(workdir / "l.json")],
+                               youtube=fake) == 3
+    out = capsys.readouterr().out
+    assert "These will be visible to others" in out and "Rerun with --yes" in out
+    assert "c.mov" not in out.split("These will be visible")[1]  # private one isn't listed
+    assert fake.videos().inserted == []
+
+
+def test_go_live_with_yes_uploads(workdir, capsys):
+    f = golive_yaml(workdir)
+    fake = FakeYouTube(insert_results=[{"id": "1", "status": {"privacyStatus": "public"}},
+                                       {"id": "2"}, {"id": "3"}])
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--yes",
+                                "--log", str(workdir / "l.json")], youtube=fake) == 0
+    assert len(fake.videos().inserted) == 3
+    assert "Visibility: PUBLIC immediately" in capsys.readouterr().out
+
+
+class FakeTTY:
+    def isatty(self):
+        return True
+
+
+@pytest.mark.parametrize("answer,code,uploads", [("y", 0, 3), ("n", 3, 0), ("", 3, 0)])
+def test_go_live_prompt_answer(workdir, monkeypatch, answer, code, uploads):
+    f = golive_yaml(workdir)
+    monkeypatch.setattr(yt.sys, "stdin", FakeTTY())
+    monkeypatch.setattr("builtins.input", lambda prompt: answer)
+    fake = FakeYouTube(insert_results=[{"id": "1"}, {"id": "2"}, {"id": "3"}])
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--log", str(workdir / "l.json")],
+                               youtube=fake) == code
+    assert len(fake.videos().inserted) == uploads
+
+
+def test_private_only_batch_never_prompts(workdir):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n  - {filename: a.mov, title: A}\n")
+    fake = FakeYouTube(insert_results=[{"id": "1"}])
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--log", str(workdir / "l.json")],
+                               youtube=fake) == 0
+
+
+def test_schedule_too_close_by_upload_time_is_not_uploaded(workdir, monkeypatch, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                   f"  - {{filename: a.mov, title: A, publishAt: '{in_minutes(60)}'}}\n")
+    monkeypatch.setattr(yt, "seconds_until", lambda v: 120)  # time passed during earlier uploads
+    fake = FakeYouTube(insert_results=[{"id": "1"}])
+    assert aaron_uploader.main(["--vids", f, "--no-channel-check", "--yes",
+                                "--log", str(workdir / "l.json")], youtube=fake) == 1
+    assert fake.videos().inserted == [] and "too soon to upload" in capsys.readouterr().out
+
+
+def test_min_lead_flag(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                   f"  - {{filename: a.mov, title: A, publishAt: '{in_minutes(10)}'}}\n")
+    args = ["--vids", f, "--dry-run", "--no-channel-check", "--log", str(workdir / "l.json")]
+    assert aaron_uploader.main(args) == 2
+    assert aaron_uploader.main(args + ["--min-lead", "5"]) == 0
+
+
+def test_updater_title_change_on_public_video_does_not_prompt(tmp_path):
+    rc, v = run_updater(tmp_path, "videos:\n  - url: VID\n    title: New\n", yes=False)
+    assert rc == 0 and len(v.updated) == 1
+
+
+def test_updater_making_public_needs_confirmation(tmp_path, capsys):
+    draft = dict(CURRENT, status=dict(CURRENT["status"], privacyStatus="private"))
+    rc, v = run_updater(tmp_path, "videos:\n  - url: VID\n    privacyStatus: public\n",
+                        current=draft, yes=False)
+    assert rc == 3 and v.updated == []
+    out = capsys.readouterr().out
+    assert "visibility: private -> PUBLIC immediately" in out and "Rerun with --yes" in out
+    rc, v = run_updater(tmp_path, "videos:\n  - url: VID\n    privacyStatus: public\n",
+                        current=draft, yes=True)
+    assert rc == 0 and len(v.updated) == 1
+
+
+def test_updater_making_private_does_not_prompt(tmp_path):
+    rc, v = run_updater(tmp_path, "videos:\n  - url: VID\n    privacyStatus: private\n", yes=False)
+    assert rc == 0 and v.updated[0][1]["status"]["privacyStatus"] == "private"

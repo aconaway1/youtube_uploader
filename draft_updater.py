@@ -30,7 +30,7 @@ WRITABLE_STATUS = ("privacyStatus", "embeddable", "license", "publicStatsViewabl
                    "publishAt", "selfDeclaredMadeForKids", "containsSyntheticMedia")
 
 
-def parse_changes(vid, base_dir="."):
+def parse_changes(vid, base_dir=".", min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
     """Validate one YAML entry. Returns (video_id, changes, problems)."""
     problems = []
     if not isinstance(vid, dict):
@@ -69,7 +69,7 @@ def parse_changes(vid, base_dir="."):
         changes["status"]["privacyStatus"] = privacy
     if vid.get("publishAt"):
         try:
-            changes["status"]["publishAt"] = yt.parse_publish_at(vid["publishAt"])
+            changes["status"]["publishAt"] = yt.parse_publish_at(vid["publishAt"], min_lead)
         except ValueError as e:
             problems.append(str(e))
         if changes["status"].get("privacyStatus", "private") != "private":
@@ -138,13 +138,18 @@ def main(argv=None, youtube=None):
     parser.add_argument("--vids", default=DRAFT_VIDEOS_FILE, help="YAML file of video changes")
     parser.add_argument("--dry-run", action="store_true",
                         help="read the videos and show what would change, without saving")
+    parser.add_argument("--yes", action="store_true",
+                        help="don't ask before making videos public/unlisted or scheduling them")
+    parser.add_argument("--min-lead", type=int, default=yt.DEFAULT_MIN_LEAD_MINUTES,
+                        metavar="MINUTES",
+                        help="publishAt must be at least this far in the future (default %(default)s)")
     args = parser.parse_args(argv)
 
     data = yt.load_yaml(args.vids)
     base_dir = os.path.dirname(os.path.abspath(args.vids))
     jobs, bad = [], 0
     for i, vid in enumerate(data["videos"], 1):
-        video_id, changes, problems = parse_changes(vid, base_dir)
+        video_id, changes, problems = parse_changes(vid, base_dir, args.min_lead)
         label = video_id or f"entry {i}"
         for p in problems:
             print(f"ERROR {label}: {p}")
@@ -157,7 +162,9 @@ def main(argv=None, youtube=None):
         return 2
 
     youtube = youtube or yt.get_youtube()
-    updated, failed = 0, 0
+
+    # Pass 1: read every video and work out the changes, without saving anything.
+    plans, failed = [], 0
     for n, (video_id, changes) in enumerate(jobs, 1):
         print(f"[{n}/{len(jobs)}] {video_id}")
         changes = dict(changes)
@@ -165,37 +172,6 @@ def main(argv=None, youtube=None):
         try:
             found = youtube.videos().list(part="snippet,status,recordingDetails,processingDetails",
                                           id=video_id).execute().get("items", [])
-            if not found:
-                print("  FAILED: no video with that ID on this channel/account")
-                failed += 1
-                continue
-            current = found[0]
-            body = parts = None
-            if changes:
-                body, parts = merge(current, changes)
-                print("\n".join(describe(current, body)))
-            processing = current.get("processingDetails", {}).get("processingStatus", "succeeded")
-            if thumbnail:
-                print(f"    thumbnail -> {thumbnail}")
-                if processing != "succeeded":
-                    print(f"  FAILED: video processing is '{processing}'; "
-                          "thumbnails can only be set once it has succeeded")
-                    failed += 1
-                    continue
-            if args.dry_run:
-                continue
-            if changes:
-                youtube.videos().update(part=",".join(parts), body=body).execute()
-            if thumbnail:
-                try:
-                    yt.set_thumbnail(youtube, video_id, thumbnail)
-                except HttpError as e:
-                    print("  FAILED: thumbnail " + yt.thumbnail_error_message(e)
-                          + (" (other changes were saved)" if changes else ""))
-                    failed += 1
-                    continue
-            updated += 1
-            print("  Updated.")
         except HttpError as e:
             reason = yt.http_error_reason(e)
             print(f"  FAILED: HTTP {e.resp.status} {reason}")
@@ -203,10 +179,79 @@ def main(argv=None, youtube=None):
             if reason in yt.FATAL_REASONS:
                 print("  Stopping: this error will affect every remaining video.")
                 break
+            continue
+        if not found:
+            print("  FAILED: no video with that ID on this channel/account")
+            failed += 1
+            continue
+        current = found[0]
+        print(f"  \"{current.get('snippet', {}).get('title', '')}\"")
+        body = parts = None
+        if changes:
+            body, parts = merge(current, changes)
+            print("\n".join(describe(current, body)))
+            if "status" in body:
+                before = yt.visibility(current.get("status", {}))
+                after = yt.visibility(body["status"])
+                if before != after:
+                    print(f"    visibility: {before} -> {after}")
+        if thumbnail:
+            print(f"    thumbnail -> {thumbnail}")
+            processing = current.get("processingDetails", {}).get("processingStatus", "succeeded")
+            if processing != "succeeded":
+                print(f"  FAILED: video processing is '{processing}'; "
+                      "thumbnails can only be set once it has succeeded")
+                failed += 1
+                continue
+        plans.append({"id": video_id, "current": current, "body": body, "parts": parts,
+                      "thumbnail": thumbnail})
 
     if args.dry_run:
         print(f"\nDry run: {len(jobs)} video(s) checked, nothing saved.")
         return 1 if failed else 0
+
+    # Ask before anything becomes more visible.
+    live = []
+    for p in plans:
+        if p["body"] and "status" in p["body"] and yt.goes_live(p["body"]["status"]):
+            before = yt.visibility(p["current"].get("status", {}))
+            after = yt.visibility(p["body"]["status"])
+            if before != after:
+                live.append(f"{p['id']} \"{p['body']['snippet']['title']}\": {after}")
+    if live and not yt.confirm(live, assume_yes=args.yes):
+        print("Stopped. Nothing was changed.")
+        return 3
+
+    # Pass 2: save.
+    updated = 0
+    for p in plans:
+        try:
+            if p["body"]:
+                status = p["body"].get("status", {})
+                if status.get("publishAt") and yt.seconds_until(status["publishAt"]) < 60:
+                    print(f"{p['id']}: FAILED: scheduled time is now too close; pick a later one")
+                    failed += 1
+                    continue
+                youtube.videos().update(part=",".join(p["parts"]), body=p["body"]).execute()
+            if p["thumbnail"]:
+                try:
+                    yt.set_thumbnail(youtube, p["id"], p["thumbnail"])
+                except HttpError as e:
+                    print(f"{p['id']}: FAILED: thumbnail " + yt.thumbnail_error_message(e)
+                          + (" (other changes were saved)" if p["body"] else ""))
+                    failed += 1
+                    continue
+            updated += 1
+            vis = yt.visibility(p["body"]["status"]) if p["body"] and "status" in p["body"] else None
+            print(f"{p['id']}: updated" + (f" ({vis})" if vis else ""))
+        except HttpError as e:
+            reason = yt.http_error_reason(e)
+            print(f"{p['id']}: FAILED: HTTP {e.resp.status} {reason}")
+            failed += 1
+            if reason in yt.FATAL_REASONS:
+                print("Stopping: this error will affect every remaining video.")
+                break
+
     print(f"\n{updated} updated, {failed} failed.")
     return 1 if failed or updated < len(jobs) else 0
 

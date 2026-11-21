@@ -124,9 +124,26 @@ What it does:
 
 The Shorts "Related video" link isn't available in the YouTube API, so set that in Studio.
 
-**Unaudited projects:** Google locks videos uploaded through an API project that hasn't passed the
-[YouTube API audit](https://support.google.com/youtube/contact/yt_api_form) to private, whatever
-`privacyStatus` says.
+## Going public: safeguards
+
+Google says videos uploaded through an API project that hasn't passed the
+[YouTube API audit](https://support.google.com/youtube/contact/yt_api_form) are locked to private.
+**Don't rely on that.** In testing, this project's uploads went public without an audit. So:
+
+- **Plain-language visibility.** The dry run, the confirmation prompt and the upload summary say
+  `private`, `PUBLIC immediately`, `UNLISTED (anyone with the link)` or
+  `private, goes PUBLIC Sun Nov 22, 12:00 PM CST (in 1 day 3 hr)`.
+- **You're asked first.** Before uploading anything public, unlisted or scheduled, the uploader lists
+  those videos and asks `Continue? [y/N]`. All-private batches don't ask. When it isn't running in
+  a terminal (launchd, cron, a pipe) it can't ask, so it stops unless you pass `--yes`.
+- **A minimum lead time for `publishAt`.** A schedule less than 15 minutes away is rejected, so a
+  video can't go live before it has processed and you've looked at it. Change it with
+  `--min-lead MINUTES`. Each scheduled video is checked again just before it uploads, and is skipped
+  if a long batch has left less than 5 minutes.
+
+The draft updater works the same way: it reads every video and shows all changes first, asks once if
+any change makes a video more visible or schedules it (`--yes` to skip), then saves. Retitling a
+public video or making a video private doesn't ask.
 
 # The Updater
 

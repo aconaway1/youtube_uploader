@@ -6,6 +6,7 @@ parsing/validation helpers both scripts need.
 import datetime
 import os
 import random
+import sys
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -194,8 +195,15 @@ def parse_video_id(url_or_id):
     raise ValueError(f"Can't find a video ID in {url_or_id!r}")
 
 
-def parse_publish_at(value):
-    """Local 'YYYY-MM-DD HH:MM[:SS]' (string or YAML datetime) -> RFC 3339 string."""
+DEFAULT_MIN_LEAD_MINUTES = 15
+
+
+def parse_publish_at(value, min_lead_minutes=DEFAULT_MIN_LEAD_MINUTES):
+    """Local 'YYYY-MM-DD HH:MM[:SS]' (string or YAML datetime) -> RFC 3339 string.
+
+    Rejects times less than min_lead_minutes from now, so a video can't go
+    live before it has processed and you've had a chance to check it.
+    """
     if isinstance(value, datetime.datetime):
         dt = value
     elif isinstance(value, datetime.date):
@@ -212,9 +220,77 @@ def parse_publish_at(value):
             raise ValueError(f"publishAt must look like 2026-11-21 13:00 (got {value!r})")
     if dt.tzinfo is None:
         dt = dt.astimezone()  # interpret as this computer's local time
-    if dt <= datetime.datetime.now(dt.tzinfo):
-        raise ValueError(f"publishAt {dt.isoformat()} is in the past")
+    now = datetime.datetime.now(dt.tzinfo)
+    if dt <= now:
+        raise ValueError(f"publishAt {format_when(dt)} is in the past")
+    if dt < now + datetime.timedelta(minutes=min_lead_minutes):
+        raise ValueError(f"publishAt {format_when(dt)} is less than {min_lead_minutes} minutes "
+                         "away; pick a later time (or change --min-lead)")
     return dt.isoformat()
+
+
+# --------------------------------------------------------------------------
+# Plain-language visibility
+# --------------------------------------------------------------------------
+
+def _as_datetime(value):
+    if isinstance(value, datetime.datetime):
+        return value
+    return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def format_when(value):
+    """'Sat Nov 22, 1:00 PM CST (in 1 day 4 hr)' in this computer's local time."""
+    dt = _as_datetime(value).astimezone()
+    stamp = dt.strftime("%a %b %d, %I:%M %p %Z").replace(" 0", " ")
+    secs = int((dt - datetime.datetime.now(dt.tzinfo)).total_seconds())
+    if secs < 0:
+        return f"{stamp} (already passed)"
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    parts = ([f"{days} day{'s' if days != 1 else ''}"] if days else []) + \
+            ([f"{hours} hr"] if hours else []) + \
+            ([f"{minutes} min"] if minutes and not days else [])
+    return f"{stamp} (in {' '.join(parts) or 'under a minute'})"
+
+
+def visibility(status):
+    """How visible a video with this status is, in words."""
+    privacy = status.get("privacyStatus", "private")
+    if status.get("publishAt") and privacy == "private":
+        return f"private, goes PUBLIC {format_when(status['publishAt'])}"
+    if privacy == "public":
+        return "PUBLIC immediately"
+    if privacy == "unlisted":
+        return "UNLISTED (anyone with the link)"
+    return "private"
+
+
+def goes_live(status):
+    """True if this status makes the video visible to others, now or later."""
+    return (status.get("privacyStatus") in ("public", "unlisted")
+            or bool(status.get("publishAt")))
+
+
+def confirm(lines, assume_yes=False, input_fn=None, stream=None):
+    """Show what will become visible and ask. Returns True to go ahead."""
+    input_fn = input_fn or input
+    stream = stream or sys.stdin
+    print("\nThese will be visible to others:")
+    for line in lines:
+        print(f"  {line}")
+    if assume_yes:
+        print("Going ahead (--yes).")
+        return True
+    if not stream.isatty():
+        print("Not running in a terminal, so I can't ask. Rerun with --yes to confirm.")
+        return False
+    try:
+        answer = input_fn("Continue? [y/N] ")
+    except EOFError:
+        answer = ""
+    return answer.strip().lower() in ("y", "yes")
 
 
 def parse_recording_date(value):
@@ -396,3 +472,8 @@ def check_tags(tags, problems):
     n = tags_length(tags)
     if n > MAX_TAGS_CHARS:
         problems.append(f"tags total {n} characters (max {MAX_TAGS_CHARS})")
+
+
+def seconds_until(value):
+    dt = _as_datetime(value)
+    return (dt - datetime.datetime.now(dt.tzinfo)).total_seconds()
