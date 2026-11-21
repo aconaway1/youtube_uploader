@@ -1,5 +1,8 @@
 Version 0.3
 
+- Added `mark_published.py`: tags uploaded files Published (green) and removes
+  Approved for Publishing in Finder, from upload_log.json; separate from the
+  YouTube code. `launchd/install_mark_published.sh` runs it every 6 hours
 - Thumbnails: optional `thumbnail:` in both YAML files. The uploader sets them
   after processing finishes and retries unset ones on the next run
 - Switched from the deprecated oauth2client to google-auth; removed the unrelated

@@ -151,6 +151,35 @@ It reads each video's current details first and only changes the fields you gave
 language, translations and other settings aren't wiped. It only touches the privacy setting when you
 give `privacyStatus` or `publishAt`, so retitling a public video leaves it public.
 
+# Tagging Uploaded Files in Finder
+
+`mark_published.py` is a separate, macOS-only script. It never talks to YouTube. It reads
+`upload_log.json` and, for each file the uploader successfully uploaded, adds the green
+**Published** Finder tag and removes **Approved for Publishing**. Files that are already tagged are
+skipped, so running it repeatedly is harmless. Tag names and color are set at the top of the script.
+
+```
+python3 mark_published.py --dry-run        # show what would change
+python3 mark_published.py                  # tag
+python3 mark_published.py --keep-approved  # add Published, leave Approved alone
+```
+
+Run it right after an upload (`python aaron_uploader.py; python3 mark_published.py`), or have
+launchd run it every 6 hours and at login:
+
+```
+./launchd/install_mark_published.sh             # install or update
+INTERVAL_HOURS=3 ./launchd/install_mark_published.sh
+./launchd/install_mark_published.sh --remove    # uninstall
+launchctl kickstart gui/$(id -u)/com.ronconrails.mark-published   # run now
+tail ~/Library/Logs/mark_published.log
+```
+
+It only knows about videos the uploader logged. Videos uploaded by hand in Studio aren't tagged.
+If your videos live in Desktop, Documents, Downloads, iCloud Drive, or on an external drive, macOS
+may block the background job until you give Python access in System Settings → Privacy & Security.
+If a file is moved or renamed after uploading, the script reports it as MISSING.
+
 # Quotas
 
 You get 10,000 units a day for most calls, and uploads have their own limit of 100 a day.
