@@ -4,12 +4,13 @@ __pycache__/
 .venv/
 .pytest_cache/
 
-# Secrets and per-machine state
-client_secrets.json
-token.json
+# Secrets and per-machine state. The repo has no JSON files of its own, so
+# ignore every JSON file: that covers client_secrets.json, Google's default
+# download name (client_secret_<id>.apps.googleusercontent.com.json),
+# token.json and upload_log.json wherever they land in the repo.
+*.json
+*.json.tmp
 *oauth2*
-upload_log.json
-upload_log.json.tmp
 
 # Your working files (copy from examples/)
 video_summary.yml
