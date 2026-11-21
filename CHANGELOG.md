@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### New
+- Tests run on GitHub Actions for every push: Ubuntu (Python 3.10, 3.12, 3.13) and macOS, which
+  also checks real Finder tags.
 - `playlists:` in the updater: adds existing videos to playlists, skipping ones they're already in.
 - `schedule.skip`: dates and weekday names that never get a scheduled video (holidays, days off).
   `upcoming.py` marks them "skipped".

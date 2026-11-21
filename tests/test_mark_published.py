@@ -183,3 +183,20 @@ def test_example_settings_match_defaults():
                         "examples", "settings.example.yml")
     tags, problems = mp.load_settings(path)
     assert problems == [] and tags == mp.DEFAULT_TAGS
+
+
+# ---------------------------------------------------------------- real macOS (runs in CI on macos-latest)
+
+@pytest.mark.skipif(sys.platform != "darwin" or not os.path.exists("/usr/bin/xattr"),
+                    reason="needs macOS's /usr/bin/xattr")
+def test_real_xattr_roundtrip_on_macos(tmp_path, monkeypatch):
+    monkeypatch.setattr(mp, "SETTINGS_FILE", str(tmp_path / "no-settings.yml"))
+    p = tmp_path / "clip.mov"
+    p.write_bytes(b"v")
+    assert mp.read_tags(str(p)) == []                       # "No such xattr" path
+    mp.write_tags(str(p), ["Approved for Publishing\n5", "BNSF"])
+    assert mp.read_tags(str(p)) == ["Approved for Publishing\n5", "BNSF"]
+    log = tmp_path / "upload_log.json"
+    log.write_text(json.dumps({str(p): {"video_id": "X"}}))
+    assert mp.main(["--log", str(log)]) == 0
+    assert mp.read_tags(str(p)) == ["BNSF", "Published\n2"]
