@@ -1014,12 +1014,13 @@ def day_at(days_from_today, hhmm="13:00"):
 def test_parse_schedule():
     tomorrow = datetime.date.today() + datetime.timedelta(days=1)
     assert uploader.parse_schedule({"time": "13:00"})[0] == \
-        {"time": datetime.time(13, 0), "start": tomorrow}
+        {"time": datetime.time(13, 0), "start": tomorrow, "skip_dates": set(), "skip_weekdays": set()}
     # unquoted 13:00 in YAML arrives as 780
     import yaml
     cfg = yaml.safe_load("time: 13:00\nstart: 2027-01-05\n")
     sched, problems = uploader.parse_schedule(cfg)
-    assert problems == [] and sched == {"time": datetime.time(13, 0), "start": datetime.date(2027, 1, 5)}
+    assert problems == [] and sched["time"] == datetime.time(13, 0)
+    assert sched["start"] == datetime.date(2027, 1, 5)
     assert uploader.parse_schedule({"time": "1pm"})[1]
     assert uploader.parse_schedule({"time": "13:00", "every": 2})[1]
     assert uploader.parse_schedule("13:00")[1]
@@ -1176,7 +1177,8 @@ def test_upcoming_render():
 def test_upcoming_main_with_fake_channel(capsys):
     existing = [{"id": "S1", "title": "Tomorrow", "fileName": "x.mov", "duration": "PT30S",
                  "privacyStatus": "private", "publishAt": day_at(1).isoformat(), "size": (1080, 1920)}]
-    assert upcoming.main(["--days", "3"], youtube=FakeYouTube(existing=existing)) == 0
+    assert upcoming.main(["--days", "3", "--vids", "/nonexistent.yml"],
+                         youtube=FakeYouTube(existing=existing)) == 0
     out = capsys.readouterr().out
     assert '"Tomorrow"' in out and "1 Short scheduled, 2 open days." in out
 
@@ -1455,3 +1457,68 @@ def test_upcoming_shows_todays_published_short_and_counts_today_taken():
     assert 'scheduled  "Tomorrow"' in lines[2]
     assert "Last week" not in text
     assert "1 Short scheduled, 1 open day." in text
+
+
+
+# ---------------------------------------------------------------- schedule.skip
+
+def test_parse_skip():
+    import yaml
+    cfg = yaml.safe_load("time: '07:15'\nskip:\n  - 2026-11-26\n  - '2026-12-25'\n  - Sunday\n  - sat\n")
+    sched, problems = uploader.parse_schedule(cfg)
+    assert problems == []
+    assert sched["skip_dates"] == {datetime.date(2026, 11, 26), datetime.date(2026, 12, 25)}
+    assert sched["skip_weekdays"] == {6, 5}
+    assert uploader.parse_schedule({"time": "07:15", "skip": "Sunday"})[0]["skip_weekdays"] == {6}
+    assert uploader.parse_schedule({"time": "07:15", "skip": ["Funday"]})[1]
+    every = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    assert "nothing could be scheduled" in uploader.parse_schedule({"time": "07:15", "skip": every})[1][0]
+
+
+def test_assign_slots_skips_listed_days(tmp_path):
+    jobs = make_jobs(tmp_path, [{"filename": f"{n}.mov", "title": n} for n in "abc"])
+    d1, d2, d3, d4 = (datetime.date.today() + datetime.timedelta(days=i) for i in (1, 2, 3, 4))
+    sched = {"time": datetime.time(13, 0), "start": d1, "skip_dates": {d2}, "skip_weekdays": set()}
+    channel = [{"id": "S3", "title": "Taken", "isShort": True, "publishAt": day_at(3).isoformat()}]
+    plan = uploader.assign_slots(jobs, sched, channel, min_lead=15)
+    got = [yt.local_date(j["body"]["status"]["publishAt"]) for j in jobs]
+    assert got[0] == d1 and got[1] == d4                  # d2 skipped, d3 taken
+    assert (d2, None, None) in plan and (d3, None, "Taken") in plan
+
+
+def test_assign_slots_skips_weekdays(tmp_path):
+    jobs = make_jobs(tmp_path, [{"filename": f"{n}.mov", "title": n} for n in "abcdefg"])
+    start = datetime.date.today() + datetime.timedelta(days=1)
+    sched = {"time": datetime.time(13, 0), "start": start, "skip_dates": set(), "skip_weekdays": {5, 6}}
+    uploader.assign_slots(jobs, sched, [], min_lead=15)
+    days = [yt.local_date(j["body"]["status"]["publishAt"]) for j in jobs]
+    assert all(d.weekday() < 5 for d in days) and len(set(days)) == 7
+
+
+def test_skip_day_in_dry_run_and_own_publish_at_note(workdir, capsys):
+    skip_day = datetime.date.today() + datetime.timedelta(days=1)
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nschedule:\n  time: '13:00'\n"
+                   f"  skip: [{skip_day.isoformat()}]\n"
+                   "videos:\n  - {filename: a.mov, title: A}\n"
+                   f"  - {{filename: b.mov, title: B, publishAt: '{skip_day.isoformat()} 18:00'}}\n")
+    fake = FakeYouTube(existing=[])
+    assert uploader.main(["--vids", f, "--dry-run", "--log", str(workdir / "l.json")], youtube=fake) == 0
+    out = capsys.readouterr().out
+    assert "(skipped: in schedule.skip)" in out
+    assert "NOTE b.mov: its own publishAt" in out
+
+
+def test_upcoming_marks_skip_days(tmp_path):
+    channel = [{"id": "S1", "title": "Tomorrow", "isShort": True, "publishAt": day_at(1).isoformat()}]
+    skip = {"skip_dates": {datetime.date.today() + datetime.timedelta(days=2)}, "skip_weekdays": set()}
+    lines = upcoming.render(channel, days=4, skip=skip)
+    assert lines[3].endswith("skipped")
+    assert "1 Short scheduled, 2 open days, 1 skipped day." in "\n".join(lines)
+
+
+def test_upcoming_reads_skip_from_yaml(tmp_path, capsys):
+    d = datetime.date.today() + datetime.timedelta(days=1)
+    vids = write_yaml(tmp_path / "v.yml", f"schedule:\n  time: '13:00'\n  skip: [{d.isoformat()}]\nvideos: []\n")
+    assert upcoming.main(["--days", "3", "--vids", vids], youtube=FakeYouTube(existing=[])) == 0
+    out = capsys.readouterr().out
+    assert "skipped" in out and "1 skipped day" in out

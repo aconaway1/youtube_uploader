@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### New
+- `schedule.skip`: dates and weekday names that never get a scheduled video (holidays, days off).
+  `upcoming.py` marks them "skipped".
 - `settings.yml` (git-ignored; see `examples/settings.example.yml`) sets the Finder tag names, the
   Published color and whether to remove the approved tag for `mark_published.py`.
 - A day where a Short already went public counts as taken: the scheduler skips it and

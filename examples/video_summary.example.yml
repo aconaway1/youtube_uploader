@@ -28,6 +28,10 @@ defaults:
 schedule:
   time: "13:00"                    # local time each video goes public
   start: 2026-11-22                # optional; first day to try
+  skip:                            # optional; never schedule on these days
+    - 2026-11-26                   #   a date (Thanksgiving)
+    - 2026-12-25
+    - Sunday                       #   or a weekday name, for every week
 
 videos:
   - filename: "BNSF 674 yard job 20260520.mov"   # REQUIRED. Just the name: found in video_dir or

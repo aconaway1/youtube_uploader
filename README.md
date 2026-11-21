@@ -235,8 +235,22 @@ Scheduling 2 videos, one per open day at 1:00 PM:
   Tue Nov 24  BNSF 674 yard job 20260520.mov: "BNSF 674 Sansa Fe Pulling a Yard Job ..."
 ```
 
-A video with its own `publishAt` keeps it (and claims that day); `skipSchedule: true` leaves a
-video out of the schedule. Days are assigned in YAML order. Run `--dry-run` first to see the plan.
+**Days off.** List dates or weekday names under `skip:` and nothing is scheduled on them:
+
+```yaml
+schedule:
+  time: "07:15"
+  skip:
+    - 2026-11-26     # Thanksgiving
+    - 2026-12-25
+    - Sunday         # every Sunday
+```
+
+They show as `(skipped: in schedule.skip)` in the plan, and `upcoming.py` marks them "skipped"
+(it reads `skip:` from `video_summary.yml`, or the file given with `--vids`).
+
+A video with its own `publishAt` keeps it (and claims that day), even on a skip day, with a note;
+`skipSchedule: true` leaves a video out of the schedule. Days are assigned in YAML order. Run `--dry-run` first to see the plan.
 To move something later, change its `publishAt` with the updater.
 
 ## What's scheduled: upcoming.py

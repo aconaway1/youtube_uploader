@@ -190,8 +190,41 @@ def apply_defaults(vid, defaults):
     return merged
 
 
+WEEKDAYS = {name: i for i, names in enumerate(
+    [("monday", "mon"), ("tuesday", "tue", "tues"), ("wednesday", "wed"),
+     ("thursday", "thu", "thur", "thurs"), ("friday", "fri"), ("saturday", "sat"),
+     ("sunday", "sun")]) for name in names}
+
+
+def parse_skip(value):
+    """schedule.skip -> (set of dates, set of weekday numbers, problems).
+
+    Accepts dates (2026-11-26) and weekday names (Sunday, sun), as a list or a
+    single value."""
+    items = value if isinstance(value, (list, tuple)) else [value]
+    dates, weekdays, problems = set(), set(), []
+    for item in items:
+        if isinstance(item, datetime.datetime):
+            dates.add(item.date())
+        elif isinstance(item, datetime.date):
+            dates.add(item)
+        elif str(item).strip().lower() in WEEKDAYS:
+            weekdays.add(WEEKDAYS[str(item).strip().lower()])
+        else:
+            try:
+                dates.add(datetime.datetime.strptime(str(item).strip(), "%Y-%m-%d").date())
+            except ValueError:
+                problems.append(f"schedule: skip entries must be dates like 2026-11-26 or "
+                                f"weekday names like Sunday (got {item!r})")
+    return dates, weekdays, problems
+
+
+def is_skipped(day, sched):
+    return day in sched.get("skip_dates", ()) or day.weekday() in sched.get("skip_weekdays", ())
+
+
 def parse_schedule(cfg, today=None):
-    """The YAML `schedule:` block -> ({'time': time, 'start': date}, problems)."""
+    """The YAML `schedule:` block -> ({'time', 'start', 'skip_dates', 'skip_weekdays'}, problems)."""
     if cfg is None:
         return None, []
     if not isinstance(cfg, dict):
@@ -217,19 +250,27 @@ def parse_schedule(cfg, today=None):
             problems.append(f"schedule: start must look like 2026-11-22 (got {cfg.get('start')!r})")
     if isinstance(start, datetime.datetime):
         start = start.date()
-    unknown = set(cfg) - {"time", "start"}
+    skip_dates, skip_weekdays, skip_problems = parse_skip(cfg.get("skip") or [])
+    problems += skip_problems
+    if len(skip_weekdays) == 7:
+        problems.append("schedule: skip lists every day of the week, so nothing could be scheduled")
+    unknown = set(cfg) - {"time", "start", "skip"}
     if unknown:
         problems.append(f"schedule: unknown setting(s) {', '.join(sorted(unknown))} "
-                        "(only time and start)")
-    return ({"time": when, "start": start} if not problems else None), problems
+                        "(only time, start and skip)")
+    if problems:
+        return None, problems
+    return {"time": when, "start": start, "skip_dates": skip_dates,
+            "skip_weekdays": skip_weekdays}, []
 
 
 def assign_slots(jobs, sched, channel, min_lead, now=None):
     """Give each job without its own publishAt the next day with no Short scheduled.
 
-    Days with a Short already scheduled or already published on the channel,
-    or a publishAt given in this batch, are skipped. Returns [(date, job or None, taken_title)] for the
-    calendar printout, from the start date through the last assigned day.
+    Days with a Short already scheduled or already published on the channel, a
+    publishAt given in this batch, or listed in schedule.skip are passed over.
+    Returns [(date, job or None, taken_title or None)] for the printout, from the
+    start date through the last assigned day; (date, None, None) is a skip day.
     """
     now = now or datetime.datetime.now().astimezone()
     taken = {}
@@ -252,7 +293,10 @@ def assign_slots(jobs, sched, channel, min_lead, now=None):
             continue
         while True:
             when = datetime.datetime.combine(day, sched["time"]).astimezone()
-            if day in taken:
+            if is_skipped(day, sched):
+                if when >= earliest:
+                    plan.append((day, None, None))
+            elif day in taken:
                 plan.append((day, None, taken[day]))
             elif when >= earliest:
                 break
@@ -273,6 +317,8 @@ def print_plan(plan, sched):
         label = day.strftime("%a %b %d").replace(" 0", " ")
         if job:
             print(f"  {label}  {job['filename']}: \"{job['body']['snippet']['title']}\"")
+        elif taken_title is None:
+            print(f"  {label}  (skipped: in schedule.skip)")
         else:
             print(f"  {label}  (taken: \"{taken_title}\")")
     print()
@@ -534,6 +580,12 @@ def main(argv=None, youtube=None):
                   + ", ".join(f"\"{t['title']}\"" for t in missing) + "; adding it")
             retries.append((job, prev, missing))
 
+    if sched:
+        for job in todo:
+            when = job["body"]["status"].get("publishAt")
+            if job["own_publish_at"] and when and is_skipped(yt.local_date(when), sched):
+                print(f"NOTE {job['filename']}: its own publishAt ({yt.format_when(when)}) is on a "
+                      "day in schedule.skip; keeping it since you set it")
     if sched and todo:
         print_plan(assign_slots(todo, sched, channel, args.min_lead), sched)
 

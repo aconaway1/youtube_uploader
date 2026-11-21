@@ -3,21 +3,27 @@
 
     python upcoming.py              # next 14 days
     python upcoming.py --days 30
+    python upcoming.py --vids other.yml   # read schedule.skip from another file
 
 Days without a Short (scheduled, or already published that day) are marked
-"open"; those are the days the uploader's `schedule:` block fills. Long-form videos are listed but don't
+"open"; those are the days the uploader's `schedule:` block fills. Days listed
+in schedule.skip in video_summary.yml (if it exists) are marked "skipped". Long-form videos are listed but don't
 fill a day. Costs about 1 quota unit per 25 videos on the channel.
 """
 import argparse
 import datetime
+import os
 import sys
+
+import yaml
 
 from googleapiclient.errors import HttpError
 
+import uploader
 import yt_common as yt
 
 
-def render(channel, days, today=None, now=None):
+def render(channel, days, today=None, now=None, skip=None):
     """Lines of the day-by-day view."""
     now = now or datetime.datetime.now().astimezone()
     today = today or now.date()
@@ -33,15 +39,21 @@ def render(channel, days, today=None, now=None):
         by_day.setdefault(yt.local_date(v["publishedAt"]), []).append((v["publishedAt"], v, True))
 
     width = max(len(_day(today + datetime.timedelta(days=i))) for i in range(days))
+    skip = skip or {}
     lines = [f"Scheduled to go public, {_day(today)} through {_day(end)}:"]
-    open_days = scheduled = 0
+    open_days = scheduled = skipped = 0
     for i in range(days):
         day = today + datetime.timedelta(days=i)
         entries = sorted(by_day.get(day, []), key=lambda e: yt._as_datetime(e[0]))
         label = _day(day).ljust(width)
+        is_skip = uploader.is_skipped(day, skip)
         if not entries:
-            open_days += 1
-            lines.append(f"  {label}  open")
+            if is_skip:
+                skipped += 1
+                lines.append(f"  {label}  skipped")
+            else:
+                open_days += 1
+                lines.append(f"  {label}  open")
             continue
         for n, (when, v, published) in enumerate(entries):
             scheduled += bool(v.get("isShort")) and not published
@@ -51,14 +63,19 @@ def render(channel, days, today=None, now=None):
             prefix = label if n == 0 else " " * width
             lines.append(f"  {prefix}  {time:>8}  {kind:5}  {state:9}  \"{v['title']}\"  "
                          f"https://youtu.be/{v['id']}")
-        if not any(v.get("isShort") for _, v, _ in entries):
+        if is_skip:
+            skipped += 1
+            lines[-1] += "   (skip day)"
+        elif not any(v.get("isShort") for _, v, _ in entries):
             open_days += 1
             lines[-1] += "   (no Short: open)"
 
     later = [v for v in upcoming if yt.local_date(v["publishAt"]) > end]
     lines.append("")
     lines.append(f"{scheduled} Short{'s' if scheduled != 1 else ''} scheduled, "
-                 f"{open_days} open day{'s' if open_days != 1 else ''}."
+                 f"{open_days} open day{'s' if open_days != 1 else ''}"
+                 + (f", {skipped} skipped day{'s' if skipped != 1 else ''}" if skipped else "")
+                 + "."
                  + (f" {len(later)} more scheduled after {_day(end)}." if later else ""))
     return lines
 
@@ -71,9 +88,23 @@ def main(argv=None, youtube=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--days", type=int, default=14, help="how many days to show (default 14)")
+    parser.add_argument("--vids", default="video_summary.yml",
+                        help="YAML whose schedule.skip days to mark (default video_summary.yml, "
+                             "if it exists)")
     args = parser.parse_args(argv)
     if args.days < 1:
         parser.error("--days must be at least 1")
+
+    skip = {}
+    if os.path.exists(args.vids):
+        with open(args.vids) as f:
+            data = yaml.safe_load(f) or {}
+        sched = data.get("schedule") if isinstance(data, dict) else None
+        if isinstance(sched, dict) and sched.get("skip"):
+            dates, weekdays, problems = uploader.parse_skip(sched["skip"])
+            for p in problems:
+                print(f"NOTE {args.vids}: {p}")
+            skip = {"skip_dates": dates, "skip_weekdays": weekdays}
 
     youtube = youtube or yt.get_youtube()
     try:
@@ -81,7 +112,7 @@ def main(argv=None, youtube=None):
     except HttpError as e:
         print(f"Couldn't read the channel's videos: HTTP {e.resp.status} {yt.http_error_reason(e)}")
         return 1
-    print("\n".join(render(channel, args.days)))
+    print("\n".join(render(channel, args.days, skip=skip)))
     return 0
 
 
