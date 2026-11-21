@@ -13,10 +13,11 @@ video_dir: "~/Library/CloudStorage/Dropbox/Video/Finals"
 # Optional: fields applied to every video below, so each video only needs
 # filename and title. A video's own value replaces the default, except
 # keywords: a video's own tags are added after the default tags.
-# Allowed here: description, keywords, categoryId, privacyStatus, language,
-# madeForKids.
+# Allowed here: description, keywords, playlists, categoryId, privacyStatus,
+# language, madeForKids.
 defaults:
   keywords: "trains, railfan, railroad, Galesburg"
+  playlists: ["Railfan Shorts"]   # added to each video's own playlists
   categoryId: "19"
   language: "en"
 
@@ -49,6 +50,9 @@ videos:
     keywords: "BNSF 674, warbonnet, Santa Fe, Galesburg, yard job"
                                      # Tags, comma-separated (a YAML list also works).
                                      # 500 characters total
+    playlists: ["BNSF", "Galesburg"] # Playlist names as shown on your channel (or playlist IDs).
+                                     # A name that isn't on the channel stops the run before
+                                     # anything uploads. 50 quota units per playlist add
     categoryId: "19"                 # Default "22" (People & Blogs). 19 = Travel & Events,
                                      # 2 = Autos & Vehicles
     privacyStatus: "private"         # public | private | unlisted. Default private

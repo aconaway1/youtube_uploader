@@ -126,10 +126,43 @@ class FakeChannel:
         return FakeRequest([resp])
 
 
+class FakePlaylists:
+    """playlists.list pages + playlistItems.insert results."""
+
+    def __init__(self, playlists, insert_results=None):
+        self.playlists = playlists
+        self.insert_results = list(insert_results or [])
+        self.added = []  # (playlist_id, video_id)
+
+    def list(self, part, mine, maxResults, pageToken=None):
+        start = int(pageToken or 0)
+        chunk = self.playlists[start:start + 2]
+        resp = {"items": [{"id": p["id"], "snippet": {"title": p["title"]}} for p in chunk]}
+        if start + 2 < len(self.playlists):
+            resp["nextPageToken"] = str(start + 2)
+        return FakeRequest([resp])
+
+    def insert(self, part, body):
+        r = self.insert_results.pop(0) if self.insert_results else {"id": "PLI"}
+        pid = body["snippet"]["playlistId"]
+        vid = body["snippet"]["resourceId"]["videoId"]
+        fake = self
+
+        class Req:
+            def execute(self, num_retries=0):
+                if isinstance(r, Exception):
+                    raise r
+                fake.added.append((pid, vid))
+                return r
+        return Req()
+
+
 class FakeYouTube:
-    def __init__(self, thumbnail_results=None, existing=None, **kw):
+    def __init__(self, thumbnail_results=None, existing=None, playlists=None,
+                 playlist_results=None, **kw):
         self._videos = FakeVideos(**kw)
         self._thumbs = FakeThumbnails(thumbnail_results)
+        self.pl = FakePlaylists(playlists or [], playlist_results)
         self.channel = FakeChannel(existing or [])
         for v in existing or []:
             if not v.get("deleted"):  # deleted videos are still in the uploads list, briefly
@@ -145,7 +178,11 @@ class FakeYouTube:
         return type("C", (), {"list": lambda _s, **k: self.channel.channels_list(**k)})()
 
     def playlistItems(self):
-        return type("P", (), {"list": lambda _s, **k: self.channel.playlist_list(**k)})()
+        return type("P", (), {"list": lambda _s, **k: self.channel.playlist_list(**k),
+                              "insert": lambda _s, **k: self.pl.insert(**k)})()
+
+    def playlists(self):
+        return self.pl
 
 
 @pytest.fixture
@@ -628,7 +665,7 @@ def test_log_hit_without_channel_check_still_skips(workdir, capsys):
 EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
 UPLOADER_KEYS = {"filename", "title", "description", "keywords", "categoryId", "privacyStatus",
                  "publishAt", "recordingDate", "madeForKids", "language", "thumbnail",
-                 "skipSchedule"}
+                 "skipSchedule", "playlists"}
 UPDATER_KEYS = {"url", "title", "description", "keywords", "categoryId", "language",
                 "privacyStatus", "publishAt", "recordingDate", "madeForKids", "thumbnail"}
 
@@ -1254,3 +1291,106 @@ def test_default_tags_count_toward_500_limit(workdir, capsys):
     assert uploader.main(["--vids", f, "--dry-run", "--no-channel-check",
                           "--log", str(workdir / "l.json")]) == 2
     assert "tags total" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- playlists
+
+PLAYLISTS = [{"id": "PL_SHORTS", "title": "Railfan Shorts"}, {"id": "PL_BNSF", "title": "BNSF"},
+             {"id": "PL_GBB", "title": "Galesburg, Illinois"}]
+
+
+def pl_yaml(workdir, body):
+    return write_yaml(workdir / "v.yml", "video_dir: vids\n" + body)
+
+
+def test_playlists_from_defaults_and_video(workdir, capsys):
+    f = pl_yaml(workdir, "defaults:\n  playlists: [Railfan Shorts]\n"
+                "videos:\n"
+                "  - {filename: a.mov, title: A, playlists: [bnsf, 'Galesburg, Illinois']}\n"
+                "  - {filename: b.mov, title: B, playlists: PL_BNSF}\n"
+                "  - {filename: c.mov, title: C, playlists: [railfan shorts]}\n")
+    log = str(workdir / "l.json")
+    fake = FakeYouTube(playlists=PLAYLISTS, insert_results=[{"id": "VA"}, {"id": "VB"}, {"id": "VC"}])
+    assert uploader.main(["--vids", f, "--no-channel-check", "--log", log], youtube=fake) == 0
+    assert fake.pl.added == [("PL_SHORTS", "VA"), ("PL_BNSF", "VA"), ("PL_GBB", "VA"),
+                             ("PL_SHORTS", "VB"), ("PL_BNSF", "VB"),
+                             ("PL_SHORTS", "VC")]   # c's own entry repeats the default: added once
+    saved = json.load(open(log))
+    entry_a = next(e for e in saved.values() if e["video_id"] == "VA")
+    assert {k: v["status"] for k, v in entry_a["playlists"].items()} == \
+        {"PL_SHORTS": "added", "PL_BNSF": "added", "PL_GBB": "added"}
+    assert 'Added to playlist "Galesburg, Illinois"' in capsys.readouterr().out
+
+
+def test_unknown_playlist_stops_before_uploading(workdir, capsys):
+    f = pl_yaml(workdir, "videos:\n  - {filename: a.mov, title: A, playlists: [BSNF]}\n")
+    fake = FakeYouTube(playlists=PLAYLISTS, insert_results=[{"id": "1"}])
+    assert uploader.main(["--vids", f, "--no-channel-check", "--log", str(workdir / "l.json")],
+                         youtube=fake) == 2
+    out = capsys.readouterr().out
+    assert 'no playlist named "BSNF"' in out and '"BNSF"' in out and "Nothing was uploaded" in out
+    assert fake.videos().inserted == []
+
+
+def test_ambiguous_playlist_name(workdir, capsys):
+    twins = PLAYLISTS + [{"id": "PL_BNSF2", "title": "BNSF"}]
+    f = pl_yaml(workdir, "videos:\n  - {filename: a.mov, title: A, playlists: [BNSF]}\n")
+    fake = FakeYouTube(playlists=twins)
+    assert uploader.main(["--vids", f, "--no-channel-check", "--dry-run",
+                          "--log", str(workdir / "l.json")], youtube=fake) == 2
+    assert '2 playlists are named "BNSF" (PL_BNSF, PL_BNSF2); use the ID' in capsys.readouterr().out
+
+
+def test_dry_run_lists_playlists(workdir, capsys):
+    f = pl_yaml(workdir, "videos:\n  - {filename: a.mov, title: A, playlists: [BNSF]}\n")
+    fake = FakeYouTube(playlists=PLAYLISTS)
+    assert uploader.main(["--vids", f, "--no-channel-check", "--dry-run",
+                          "--log", str(workdir / "l.json")], youtube=fake) == 0
+    assert 'playlists: "BNSF"' in capsys.readouterr().out and fake.pl.added == []
+
+
+def test_failed_playlist_add_is_retried_once_without_reupload(workdir, capsys):
+    f = pl_yaml(workdir, "videos:\n  - {filename: a.mov, title: A, playlists: [BNSF, Railfan Shorts]}\n")
+    log = str(workdir / "l.json")
+    fake = FakeYouTube(playlists=PLAYLISTS, insert_results=[{"id": "VA"}],
+                       playlist_results=[http_error(500, "backendError"), {"id": "ok"}])
+    assert uploader.main(["--vids", f, "--no-channel-check", "--log", log], youtube=fake) == 1
+    assert fake.pl.added == [("PL_SHORTS", "VA")]
+    assert "1 playlist add(s) failed" in capsys.readouterr().out
+
+    # Rerun: no upload; only the missing playlist is added (no double add to Railfan Shorts).
+    on_channel = [{"id": "VA", "title": "A", "fileName": "a.mov"}]
+    fake2 = FakeYouTube(playlists=PLAYLISTS, existing=on_channel)
+    assert uploader.main(["--vids", f, "--log", log], youtube=fake2) == 0
+    assert fake2.videos().inserted == [] and fake2.pl.added == [("PL_BNSF", "VA")]
+    assert 'PLAYLISTS a.mov: not yet in "BNSF"' in capsys.readouterr().out
+
+    # Third run: nothing left to do.
+    fake3 = FakeYouTube(playlists=PLAYLISTS, existing=on_channel)
+    assert uploader.main(["--vids", f, "--log", log], youtube=fake3) == 0
+    assert fake3.pl.added == []
+
+
+def test_playlist_added_later_to_uploaded_entry(workdir):
+    log = str(workdir / "l.json")
+    f = pl_yaml(workdir, "videos:\n  - {filename: a.mov, title: A}\n")
+    uploader.main(["--vids", f, "--no-channel-check", "--log", log],
+                  youtube=FakeYouTube(insert_results=[{"id": "VA"}]))
+    f = pl_yaml(workdir, "videos:\n  - filename: a.mov\n    title: A\n    playlists:\n      - Galesburg, Illinois\n")
+    fake = FakeYouTube(playlists=PLAYLISTS, existing=[{"id": "VA", "title": "A", "fileName": "a.mov"}])
+    assert uploader.main(["--vids", f, "--log", log], youtube=fake) == 0
+    assert fake.pl.added == [("PL_GBB", "VA")] and fake.videos().inserted == []
+
+
+def test_playlists_need_no_lookup_when_unused(workdir):
+    f = pl_yaml(workdir, "videos:\n  - {filename: a.mov, title: A}\n")
+    fake = FakeYouTube(insert_results=[{"id": "1"}])
+    fake.pl.list = lambda **k: (_ for _ in ()).throw(AssertionError("playlists were read"))
+    assert uploader.main(["--vids", f, "--no-channel-check", "--log", str(workdir / "l.json")],
+                         youtube=fake) == 0
+
+
+def test_as_name_list_does_not_split_commas():
+    assert yt.as_name_list("Galesburg, Illinois") == ["Galesburg, Illinois"]
+    assert yt.as_name_list(["A", " B ", ""]) == ["A", "B"]
+    assert yt.as_name_list(None) == []

@@ -137,7 +137,8 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES, finder=None)
     return {"path": path, "filename": str(filename), "body": body, "thumbnail": thumbnail,
             "too_soon": too_soon, "time_problem": time_problem, "may_move_schedule": False,
             "own_publish_at": bool(vid.get("publishAt")),
-            "skip_schedule": bool(vid.get("skipSchedule"))}, problems
+            "skip_schedule": bool(vid.get("skipSchedule")),
+            "playlists": yt.as_name_list(vid.get("playlists")), "playlist_targets": []}, problems
 
 
 # --------------------------------------------------------------------------
@@ -150,7 +151,8 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES, finder=None)
 
 # Fields a `defaults:` block may set. filename, title, publishAt, recordingDate,
 # thumbnail and skipSchedule are per-video only.
-DEFAULTABLE = ("description", "keywords", "categoryId", "privacyStatus", "language", "madeForKids")
+DEFAULTABLE = ("description", "keywords", "playlists", "categoryId", "privacyStatus", "language",
+               "madeForKids")
 
 
 def check_defaults(defaults):
@@ -165,8 +167,8 @@ def check_defaults(defaults):
 
 
 def apply_defaults(vid, defaults):
-    """The video's own fields win, except keywords: default tags come first and
-    the video's own tags are added after them (duplicates dropped)."""
+    """The video's own fields win, except keywords and playlists: the defaults come
+    first and the video's own are added after them (duplicates dropped)."""
     if not defaults or not isinstance(vid, dict):
         return vid
     merged = {k: v for k, v in defaults.items() if k != "keywords"}
@@ -178,6 +180,13 @@ def apply_defaults(vid, defaults):
                 seen.add(t.casefold())
                 tags.append(t)
         merged["keywords"] = tags
+    if "playlists" in defaults:
+        names, seen = [], set()
+        for n in yt.as_name_list(defaults["playlists"]) + yt.as_name_list(vid.get("playlists")):
+            if yt.normalize_title(n) not in seen:
+                seen.add(yt.normalize_title(n))
+                names.append(n)
+        merged["playlists"] = names
     return merged
 
 
@@ -273,6 +282,26 @@ def upload(youtube, job):
         media_body=MediaFileUpload(job["path"], chunksize=-1, resumable=True),
     )
     return yt.resumable_upload(request)
+
+
+def add_playlists(youtube, filename, video_id, targets, entry, log, log_path):
+    """Add one uploaded video to its playlists, recording each result in its log
+    entry. Returns the number that failed."""
+    failed = 0
+    record = entry.setdefault("playlists", {})
+    for t in targets:
+        try:
+            yt.add_to_playlist(youtube, t["id"], video_id)
+            record[t["id"]] = {"title": t["title"], "status": "added"}
+            print(f"  Added to playlist \"{t['title']}\"")
+        except HttpError as e:
+            record[t["id"]] = {"title": t["title"],
+                               "status": f"failed: HTTP {e.resp.status} {yt.http_error_reason(e)}"}
+            print(f"  {filename}: couldn't add to playlist \"{t['title']}\" "
+                  f"({record[t['id']]['status'][8:]}); rerun to retry")
+            failed += 1
+        save_log(log_path, log)
+    return failed
 
 
 def apply_thumbnails(youtube, items, log, log_path, timeout):
@@ -412,6 +441,7 @@ def main(argv=None, youtube=None):
 
     log = load_log(args.log)
     todo, thumbs = [], []  # thumbs: [(job, video_id)] still needing a thumbnail
+    pl_retry = []          # [(job, log entry)] uploaded earlier, playlists to check
     dupes_skipped = 0
     for job in jobs:
         prev = log.get(log_key(job["path"]))
@@ -445,6 +475,8 @@ def main(argv=None, youtube=None):
         if prev and job["thumbnail"] and prev.get("thumbnail_status") != "set":
             print("     Its thumbnail isn't set yet; retrying that.")
             thumbs.append((job, prev["video_id"]))
+        if prev and job["playlists"]:
+            pl_retry.append((job, prev))
 
     # Now check publish times, only for videos that will actually be uploaded.
     late = 0
@@ -465,6 +497,39 @@ def main(argv=None, youtube=None):
               "Nothing was uploaded.")
         return 2
 
+    # Look up playlist names (only for videos that will upload, or retries).
+    need = [j for j in todo if j["playlists"]] + [j for j, _ in pl_retry]
+    if need:
+        youtube = youtube or yt.get_youtube()
+        try:
+            resolver = yt.PlaylistResolver(yt.channel_playlists(youtube))
+        except HttpError as e:
+            print(f"Couldn't read the channel's playlists: HTTP {e.resp.status} "
+                  f"{yt.http_error_reason(e)}. Nothing was uploaded.")
+            return 1
+        bad_pl = 0
+        for job in need:
+            job["playlist_targets"] = []
+            for name in job["playlists"]:
+                p, problem = resolver.resolve(name)
+                if problem:
+                    print(f"ERROR {job['filename']}: {problem}")
+                    bad_pl += 1
+                elif p["id"] not in {t["id"] for t in job["playlist_targets"]}:
+                    job["playlist_targets"].append(p)
+        if bad_pl:
+            print(f"\n{bad_pl} playlist name{'s' if bad_pl != 1 else ''} not found. "
+                  "Nothing was uploaded.")
+            return 2
+    retries = []
+    for job, prev in pl_retry:
+        added = {pid for pid, r in prev.get("playlists", {}).items() if r.get("status") == "added"}
+        missing = [t for t in job["playlist_targets"] if t["id"] not in added]
+        if missing:
+            print(f"PLAYLISTS {job['filename']}: not yet in "
+                  + ", ".join(f"\"{t['title']}\"" for t in missing) + "; adding it")
+            retries.append((job, prev, missing))
+
     if sched and todo:
         print_plan(assign_slots(todo, sched, channel, args.min_lead), sched)
 
@@ -473,10 +538,13 @@ def main(argv=None, youtube=None):
             thumb = ", + thumbnail" if job["thumbnail"] else ""
             print(f"OK   {job['filename']}: \"{job['body']['snippet']['title']}\"\n"
                   f"     {yt.visibility(job['body']['status'])}{thumb}")
+            if job["playlist_targets"]:
+                print("     playlists: " + ", ".join(f"\"{t['title']}\"" for t in job["playlist_targets"]))
         print(f"\nDry run: {len(todo)} to upload, {dupes_skipped} duplicate(s) skipped, "
-              f"{len(thumbs)} thumbnail retr{'y' if len(thumbs) == 1 else 'ies'}, nothing sent.")
+              f"{len(thumbs)} thumbnail retr{'y' if len(thumbs) == 1 else 'ies'}, "
+              f"{len(retries)} playlist retr{'y' if len(retries) == 1 else 'ies'}, nothing sent.")
         return 0
-    if not todo and not thumbs:
+    if not todo and not thumbs and not retries:
         print("\nNothing to upload.")
         return 0
 
@@ -489,6 +557,7 @@ def main(argv=None, youtube=None):
 
     youtube = youtube or yt.get_youtube()
     done, failed = [], []
+    pl_failed = 0
     for n, job in enumerate(todo, 1):
         print(f"[{n}/{len(todo)}] {job['filename']}")
         publish_at = job["body"]["status"].get("publishAt")
@@ -534,8 +603,16 @@ def main(argv=None, youtube=None):
         done.append(job)
         print(f"  Uploaded: https://youtu.be/{video_id}")
         print(f"  Visibility: {yt.visibility(response.get('status') or job['body']['status'])}")
+        if job["playlist_targets"]:
+            pl_failed += add_playlists(youtube, job["filename"], video_id, job["playlist_targets"],
+                                       log[log_key(job["path"])], log, args.log)
         if job["thumbnail"]:
             thumbs.append((job, video_id))
+
+    for job, prev, missing in retries:
+        print(f"{job['filename']}: adding to playlists")
+        pl_failed += add_playlists(youtube, job["filename"], prev["video_id"], missing,
+                                   prev, log, args.log)
 
     thumbs_not_set = apply_thumbnails(youtube, thumbs, log, args.log, args.thumbnail_wait)
 
@@ -544,8 +621,10 @@ def main(argv=None, youtube=None):
                + (f", {remaining} not attempted" if remaining else ""))
     if thumbs:
         summary += f"; {len(thumbs) - thumbs_not_set} of {len(thumbs)} thumbnails set"
+    if pl_failed:
+        summary += f"; {pl_failed} playlist add(s) failed (rerun to retry)"
     print(summary + ".")
-    return 1 if failed or remaining or thumbs_not_set else 0
+    return 1 if failed or remaining or thumbs_not_set or pl_failed else 0
 
 
 if __name__ == "__main__":

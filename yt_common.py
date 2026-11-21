@@ -612,3 +612,63 @@ def offer_new_publish_time(label, when, min_lead_minutes, auto=False, input_fn=N
         return new
     print("  Left as is. Pick a later time in the YAML.")
     return None
+
+
+# --------------------------------------------------------------------------
+# Playlists
+# --------------------------------------------------------------------------
+
+def as_name_list(value):
+    """A playlist name, or a list of them -> list of names. Names aren't split on
+    commas, since playlist names can contain them."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def channel_playlists(youtube):
+    """[{id, title}] for the signed-in channel's playlists. 1 quota unit per 50."""
+    out, token = [], None
+    while True:
+        resp = youtube.playlists().list(part="snippet", mine=True, maxResults=50,
+                                        pageToken=token).execute()
+        for item in resp.get("items", []):
+            out.append({"id": item["id"], "title": item.get("snippet", {}).get("title", "")})
+        token = resp.get("nextPageToken")
+        if not token:
+            return out
+
+
+class PlaylistResolver:
+    """Turn playlist names (or IDs) into IDs for the signed-in channel."""
+
+    def __init__(self, playlists):
+        self.playlists = playlists
+        self.by_id = {p["id"]: p for p in playlists}
+        self.by_title = {}
+        for p in playlists:
+            self.by_title.setdefault(normalize_title(p["title"]), []).append(p)
+
+    def resolve(self, name):
+        """Returns ({id, title}, problem)."""
+        if name in self.by_id:
+            return self.by_id[name], None
+        matches = self.by_title.get(normalize_title(name), [])
+        if len(matches) == 1:
+            return matches[0], None
+        if matches:
+            ids = ", ".join(p["id"] for p in matches)
+            return None, f"{len(matches)} playlists are named \"{name}\" ({ids}); use the ID instead"
+        names = sorted(p["title"] for p in self.playlists)
+        shown = ", ".join(f"\"{n}\"" for n in names[:25]) + (" ..." if len(names) > 25 else "")
+        return None, (f"no playlist named \"{name}\" on the channel"
+                      + (f". Your playlists: {shown}" if names else " (the channel has no playlists)"))
+
+
+def add_to_playlist(youtube, playlist_id, video_id):
+    """playlistItems.insert (50 quota units). Raises HttpError on failure."""
+    body = {"snippet": {"playlistId": playlist_id,
+                        "resourceId": {"kind": "youtube#video", "videoId": video_id}}}
+    return youtube.playlistItems().insert(part="snippet", body=body).execute(num_retries=3)

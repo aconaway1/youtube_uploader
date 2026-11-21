@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### New
+- `playlists:` per video and in `defaults:`. Names (or IDs) are checked against the channel before
+  anything uploads; videos are added right after upload, results are logged, failed adds are
+  retried on the next run, and a video is never added to the same playlist twice.
 - `defaults:` block in `video_summary.yml`: shared description, keywords, category, privacy,
   language and made-for-kids for every video. A video's own value wins; its keywords are added to
   the default tags. Unknown top-level settings are now an error.

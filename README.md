@@ -115,10 +115,10 @@ videos:
       Ex-Santa Fe warbonnet BNSF 674 working the yard.
 ```
 
-A video's own value replaces the default, except `keywords`: the video's tags are added after the
-default tags (repeats dropped), and the combined list must fit YouTube's 500-character limit.
-`defaults:` can set `description`, `keywords`, `categoryId`, `privacyStatus`, `language` and
-`madeForKids`; the rest are per-video. A misspelled top-level setting (like `default:`) is an error.
+A video's own value replaces the default, except `keywords` and `playlists`: the video's own are
+added after the defaults (repeats dropped). The combined tags must fit YouTube's 500-character limit.
+`defaults:` can set `description`, `keywords`, `playlists`, `categoryId`, `privacyStatus`,
+`language` and `madeForKids`; the rest are per-video. A misspelled top-level setting (like `default:`) is an error.
 
 Then:
 
@@ -184,6 +184,29 @@ Google says videos uploaded through an API project that hasn't passed the
 The draft updater works the same way: it reads every video and shows all changes first, asks once if
 any change makes a video more visible or schedules it (`--yes` to skip), then saves. Retitling a
 public video or making a video private doesn't ask.
+
+## Playlists
+
+```yaml
+defaults:
+  playlists: ["Railfan Shorts"]
+videos:
+  - filename: "A6 Departs 20260520.mov"
+    title: "..."
+    playlists:
+      - "BNSF"
+      - "Galesburg, Illinois"
+```
+
+Use playlist names as they appear on your channel (any capitalization) or playlist IDs. Before
+anything uploads, the names are looked up; one that isn't on the channel (or matches two playlists)
+stops the run, so a typo can't create a stray playlist. Each video is added right after it uploads,
+and each result is recorded in `upload_log.json`. A failed add is retried on the next run without
+re-uploading, and a video is never added to the same playlist twice. Adding a playlist to an entry
+you've already uploaded adds the video on the next run. Each add costs 50 quota units.
+
+**Commas:** in the bracket style, `[Galesburg, Illinois]` is two playlists. Quote names with commas
+(`["Galesburg, Illinois"]`) or use one name per line as above.
 
 ## Scheduling a week of Shorts
 
@@ -304,6 +327,8 @@ You get 10,000 units a day for most calls, and uploads have their own limit of 1
 | Read a video's details (`videos.list`) | 1 unit |
 | Update a video (`videos.update`) | 50 units |
 | Set a thumbnail (`thumbnails.set`) | 50 units |
+| Add to a playlist (`playlistItems.insert`) | 50 units |
+| Look up your playlists (`playlists.list`) | 1 unit per 50 playlists |
 
 So the uploader costs 1 unit per video, plus about 1 unit per 25 channel videos for the duplicate
 check, plus about 51 for a thumbnail (a few 1-unit checks while
