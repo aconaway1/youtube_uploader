@@ -145,7 +145,7 @@ def main(argv=None, youtube=None):
         else:
             jobs.append((video_id, changes))
     if bad:
-        print(f"\n{bad} entr{'y' if bad == 1 else 'ies'} need fixing. Nothing was changed.")
+        print(f"\n{bad} {'entry needs' if bad == 1 else 'entries need'} fixing. Nothing was changed.")
         return 2
 
     youtube = youtube or yt.get_youtube()

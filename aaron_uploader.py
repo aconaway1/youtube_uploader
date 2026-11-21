@@ -155,7 +155,7 @@ def main(argv=None, youtube=None):
         else:
             jobs.append(job)
     if bad:
-        print(f"\n{bad} entr{'y' if bad == 1 else 'ies'} need fixing. Nothing was uploaded.")
+        print(f"\n{bad} {'entry needs' if bad == 1 else 'entries need'} fixing. Nothing was uploaded.")
         return 2
 
     log = load_log(args.log)
