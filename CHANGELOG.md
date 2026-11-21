@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- An entry that's already on the channel no longer blocks the batch because its old
+  `publishAt` has passed. Publish times are now checked only for videos that will actually be
+  uploaded, after the duplicate check, so you can leave uploaded entries in the YAML.
+
 ## v0.3 (2026-11-21)
 
 Mostly a rewrite. Script names changed: `aaron_uploader.py` is now `uploader.py` and

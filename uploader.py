@@ -88,7 +88,9 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES, finder=None)
         "selfDeclaredMadeForKids": bool(vid.get("madeForKids", False)),
     }
 
-    too_soon = None
+    # Publish-time problems are held back until after the duplicate check, so an
+    # entry that's already on the channel is skipped instead of blocking the batch.
+    too_soon = time_problem = None
     if vid.get("publishAt"):
         try:
             status["publishAt"] = yt.parse_publish_at(vid["publishAt"], min_lead)
@@ -96,7 +98,7 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES, finder=None)
             status["publishAt"] = e.when
             too_soon = e.when  # main() offers to move it
         except ValueError as e:
-            problems.append(str(e))
+            time_problem = str(e)
         if privacy != "private":
             # The API only schedules private videos; they flip public at publishAt.
             status["privacyStatus"] = "private"
@@ -133,7 +135,7 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES, finder=None)
                 yt.check_thumbnail(thumbnail, problems)
 
     return {"path": path, "filename": str(filename), "body": body, "thumbnail": thumbnail,
-            "too_soon": too_soon, "may_move_schedule": False,
+            "too_soon": too_soon, "time_problem": time_problem, "may_move_schedule": False,
             "own_publish_at": bool(vid.get("publishAt")),
             "skip_schedule": bool(vid.get("skipSchedule"))}, problems
 
@@ -334,15 +336,6 @@ def main(argv=None, youtube=None):
             bad += 1
         else:
             jobs.append(job)
-    for job in jobs:
-        if job["too_soon"]:
-            new = yt.offer_new_publish_time(job["filename"], job["too_soon"], args.min_lead,
-                                            auto=args.fix_schedule)
-            if new:
-                job["body"]["status"]["publishAt"] = new
-                job["may_move_schedule"] = True
-            else:
-                bad += 1
     seen = {}
     for job in jobs:
         key = log_key(job["path"])
@@ -408,6 +401,25 @@ def main(argv=None, youtube=None):
         if prev and job["thumbnail"] and prev.get("thumbnail_status") != "set":
             print("     Its thumbnail isn't set yet; retrying that.")
             thumbs.append((job, prev["video_id"]))
+
+    # Now check publish times, only for videos that will actually be uploaded.
+    late = 0
+    for job in todo:
+        if job["time_problem"]:
+            print(f"ERROR {job['filename']}: {job['time_problem']}")
+            late += 1
+        elif job["too_soon"]:
+            new = yt.offer_new_publish_time(job["filename"], job["too_soon"], args.min_lead,
+                                            auto=args.fix_schedule)
+            if new:
+                job["body"]["status"]["publishAt"] = new
+                job["may_move_schedule"] = True
+            else:
+                late += 1
+    if late:
+        print(f"\n{late} {'video needs' if late == 1 else 'videos need'} a new publish time. "
+              "Nothing was uploaded.")
+        return 2
 
     if sched and todo:
         print_plan(assign_slots(todo, sched, channel, args.min_lead), sched)

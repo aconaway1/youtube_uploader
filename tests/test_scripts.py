@@ -1138,3 +1138,59 @@ def test_upcoming_main_with_fake_channel(capsys):
     assert upcoming.main(["--days", "3"], youtube=FakeYouTube(existing=existing)) == 0
     out = capsys.readouterr().out
     assert '"Tomorrow"' in out and "1 Short scheduled, 2 open days." in out
+
+
+# ---------------------------------------------------------------- stale entries don't block a batch
+
+def test_uploaded_entry_with_past_time_is_skipped_not_an_error(workdir, capsys):
+    """The A6 case: an entry uploaded this morning, its publishAt now passed, left in the YAML."""
+    log = str(workdir / "l.json")
+    first = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                       f"  - {{filename: a.mov, title: A6, publishAt: '{in_minutes(60)}'}}\n")
+
+    uploader.main(["--vids", first, "--yes", "--log", log], youtube=FakeYouTube(insert_results=[{"id": "A6"}]))
+    capsys.readouterr()
+    later = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                       f"  - {{filename: a.mov, title: A6, publishAt: '{in_minutes(-120)}'}}\n"
+                       "  - {filename: b.mov, title: New one}\n")
+    on_channel = [{"id": "A6", "title": "A6", "fileName": "a.mov"}]
+    fake = FakeYouTube(existing=on_channel, insert_results=[{"id": "B"}])
+    assert uploader.main(["--vids", later, "--log", log], youtube=fake) == 0
+    out = capsys.readouterr().out
+    assert "DUPLICATE a.mov: skipped" in out and "in the past" not in out
+    assert [b["snippet"]["title"] for _, b in fake.videos().inserted] == ["New one"]
+
+
+def test_channel_duplicate_with_past_time_is_skipped(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                   f"  - {{filename: a.mov, title: A, publishAt: '{in_minutes(-30)}'}}\n")
+    fake = FakeYouTube(existing=[{"id": "X", "title": "A", "fileName": "a.mov"}])
+    assert uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake) == 0
+    assert "in the past" not in capsys.readouterr().out
+
+
+def test_new_video_with_past_time_is_still_an_error(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                   f"  - {{filename: a.mov, title: A, publishAt: '{in_minutes(-30)}'}}\n")
+    fake = FakeYouTube(insert_results=[{"id": "1"}])
+    assert uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake) == 2
+    out = capsys.readouterr().out
+    assert "in the past" in out and "1 video needs a new publish time" in out
+    assert fake.videos().inserted == []
+
+
+def test_duplicate_with_too_soon_time_is_not_offered_a_move(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                   f"  - {{filename: a.mov, title: A, publishAt: '{in_minutes(5)}'}}\n")
+    fake = FakeYouTube(existing=[{"id": "X", "title": "A", "fileName": "a.mov"}])
+    assert uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake) == 0
+    assert "less than 15 minutes" not in capsys.readouterr().out
+
+
+def test_allowed_duplicate_with_past_time_is_an_error(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                   f"  - {{filename: a.mov, title: A, publishAt: '{in_minutes(-30)}'}}\n")
+    fake = FakeYouTube(existing=[{"id": "X", "title": "A", "fileName": "a.mov"}])
+    assert uploader.main(["--vids", f, "--allow-duplicate", "a.mov",
+                          "--log", str(workdir / "l.json")], youtube=fake) == 2
+    assert "in the past" in capsys.readouterr().out and fake.videos().inserted == []
