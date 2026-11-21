@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### New
+- `settings.yml` (git-ignored; see `examples/settings.example.yml`) sets the Finder tag names, the
+  Published color and whether to remove the approved tag for `mark_published.py`.
+- A day where a Short already went public counts as taken: the scheduler skips it and
+  `upcoming.py` lists it as "published".
 - `playlists:` per video and in `defaults:`. Names (or IDs) are checked against the channel before
   anything uploads; videos are added right after upload, results are logged, failed adds are
   retried on the next run, and a video is never added to the same playlist twice.

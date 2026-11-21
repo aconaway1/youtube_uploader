@@ -293,7 +293,21 @@ give `privacyStatus` or `publishAt`, so retitling a public video leaves it publi
 `mark_published.py` is a separate, macOS-only script. It never talks to YouTube. It reads
 `upload_log.json` and, for each file the uploader successfully uploaded, adds the green
 **Published** Finder tag and removes **Approved for Publishing**. Files that are already tagged are
-skipped, so running it repeatedly is harmless. Tag names and color are set at the top of the script.
+skipped, so running it repeatedly is harmless.
+
+To use different tag names or a different color, copy `examples/settings.example.yml` to
+`settings.yml` (git-ignored) and edit it:
+
+```yaml
+finder_tags:
+  published: "Published"                 # added to each uploaded file
+  published_color: green                 # none, gray, green, purple, blue, yellow, red, orange
+  approved: "Approved for Publishing"    # removed from each uploaded file...
+  remove_approved: true                  # ...unless this is false
+```
+
+Anything you leave out keeps the default above. A bad setting stops the run before any file is
+touched. If you rename your approved tag, update your Finder saved search too.
 
 ```
 python3 mark_published.py --dry-run        # show what would change

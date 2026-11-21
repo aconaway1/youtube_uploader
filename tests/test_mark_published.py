@@ -41,6 +41,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(mp, "XATTR", str(fake))
     monkeypatch.setenv("FAKE_XATTR_STORE", str(store))
     monkeypatch.setenv("MARK_PUBLISHED_ANY_OS", "1")
+    monkeypatch.setattr(mp, "SETTINGS_FILE", str(tmp_path / "no-settings.yml"))
     files = {}
     for n in ("a.mov", "b.mov", "c.mov"):
         p = tmp_path / n
@@ -121,3 +122,64 @@ def test_quiet_prints_nothing_when_nothing_changes(env, capsys):
     capsys.readouterr()
     mp.main(["--log", str(log), "--quiet"])
     assert capsys.readouterr().out == ""
+
+
+
+# ---------------------------------------------------------------- settings.yml
+
+def write_settings(tmp, text):
+    p = tmp / "settings.yml"
+    p.write_text(text)
+    return str(p)
+
+
+def test_custom_tag_names_and_color(env, capsys):
+    tmp, f, log = env
+    set_tags(f["a.mov"], ["Ready for Publishing\n5", "BNSF"])
+    write_log(log, [f["a.mov"]])
+    st = write_settings(tmp, "finder_tags:\n  published: Posted\n  published_color: blue\n"
+                             "  approved: Ready for Publishing\n")
+    assert mp.main(["--log", str(log), "--settings", st]) == 0
+    assert mp.read_tags(f["a.mov"]) == ["BNSF", "Posted\n4"]
+
+
+def test_remove_approved_false(env):
+    tmp, f, log = env
+    set_tags(f["a.mov"], ["Approved for Publishing\n5"])
+    write_log(log, [f["a.mov"]])
+    st = write_settings(tmp, "finder_tags:\n  remove_approved: false\n")
+    assert mp.main(["--log", str(log), "--settings", st]) == 0
+    assert mp.read_tags(f["a.mov"]) == ["Approved for Publishing\n5", "Published\n2"]
+
+
+def test_partial_settings_keep_defaults(env):
+    tmp, f, log = env
+    set_tags(f["a.mov"], ["Approved for Publishing\n5"])
+    write_log(log, [f["a.mov"]])
+    st = write_settings(tmp, "finder_tags:\n  published_color: red\n")
+    mp.main(["--log", str(log), "--settings", st])
+    assert mp.read_tags(f["a.mov"]) == ["Published\n6"]
+
+
+@pytest.mark.parametrize("text,msg", [
+    ("finder_tags:\n  published_color: teal\n", "must be one of"),
+    ("finder_tags:\n  publish: X\n", "unknown finder_tags setting(s) publish"),
+    ("finder_tags:\n  published: Same\n  approved: Same\n", "can't be the same"),
+    ("finder_tags:\n  remove_approved: maybe\n", "true or false"),
+    ("finder_tags:\n  published: ''\n", "must be a tag name"),
+    ("finder_tags: Published\n", "must be a block"),
+])
+def test_bad_settings_stop_before_tagging(env, capsys, text, msg):
+    tmp, f, log = env
+    write_log(log, [f["a.mov"]])
+    st = write_settings(tmp, text)
+    assert mp.main(["--log", str(log), "--settings", st]) == 2
+    assert msg in capsys.readouterr().out
+    assert mp.read_tags(f["a.mov"]) == []
+
+
+def test_example_settings_match_defaults():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "examples", "settings.example.yml")
+    tags, problems = mp.load_settings(path)
+    assert problems == [] and tags == mp.DEFAULT_TAGS

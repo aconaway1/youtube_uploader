@@ -1,0 +1,9 @@
+# Copy to settings.yml (next to the scripts) and edit. settings.yml is git-ignored.
+# Anything you leave out uses the default shown here.
+
+# Finder tags used by mark_published.py
+finder_tags:
+  published: "Published"                 # added to each uploaded file
+  published_color: green                 # none, gray, green, purple, blue, yellow, red, orange
+  approved: "Approved for Publishing"    # removed from each uploaded file...
+  remove_approved: true                  # ...unless this is false

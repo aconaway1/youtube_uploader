@@ -16,3 +16,6 @@ __pycache__/
 video_summary.yml
 draft_videos.yml
 vids/
+
+# Personal settings (copy from examples/settings.example.yml)
+settings.yml
