@@ -72,9 +72,9 @@ If you used an older version, you can delete the old `*-oauth2.json` token files
 Copy `examples/video_summary.example.yml` to `video_summary.yml` and edit it.
 
 ```yaml
-video_dir: "~/Movies/Shorts"   # optional; default is the YAML file's folder
+video_dir: "~/Library/CloudStorage/Dropbox/Video/Finals"   # optional; default is the YAML file's folder
 videos:
-  - filename: "my clip.mov"    # required
+  - filename: "my clip.mov"    # required; found in video_dir or any folder under it
     title: "My title"          # required, 100 characters max
     description: |             # use | (not >) so your line breaks are kept
       First line shows in search.
@@ -86,7 +86,7 @@ videos:
     publishAt: "2026-11-22 13:00"    # optional, your local time; keeps it private until then
     recordingDate: 2026-05-20        # optional
     madeForKids: false               # optional, default false
-    thumbnail: "my clip thumb.jpg"   # optional .jpg/.png, relative to video_dir
+    thumbnail: "my clip thumb.jpg"   # optional .jpg/.png; next to the video, or under video_dir
 ```
 
 Then:
@@ -96,6 +96,13 @@ python aaron_uploader.py --dry-run           # check the file and the channel; n
 python aaron_uploader.py                     # upload video_summary.yml
 python aaron_uploader.py --vids other.yml    # upload a different file
 ```
+
+**Finding files in dated folders.** Give just the file name and the uploader finds it in `video_dir`
+or any folder under it (e.g. `Finals/2026/2026-05-20/`). Hidden folders like `.dropbox.cache` are
+skipped. If two folders have a file with the same name, it stops and lists them; put the folder in
+`filename` for that entry (`2026/2026-05-20/clip.mov`). Thumbnails are looked for next to their video
+first. Listing folders doesn't download Dropbox online-only files; only the file being uploaded is
+downloaded, which makes that upload slower.
 
 What it does:
 

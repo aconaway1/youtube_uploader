@@ -343,6 +343,53 @@ def resolve_path(value, base_dir):
     return p if os.path.isabs(p) else os.path.join(base_dir, p)
 
 
+class FileFinder:
+    """Find files by name anywhere under a folder (e.g. dated Dropbox folders).
+
+    A name with a folder in it ("2026/05/clip.mov") or a full path is used as
+    given. A bare name is looked for directly in the folder first, then in
+    every subfolder. The folder tree is listed once, the first time a search
+    is needed; listing doesn't download Dropbox online-only files.
+    """
+
+    def __init__(self, root):
+        self.root = root
+        self._index = None
+
+    def _build(self):
+        self._index = {}
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            # Skip hidden folders such as .dropbox.cache.
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+            for name in filenames:
+                if not name.startswith("."):
+                    self._index.setdefault(name.casefold(), []).append(os.path.join(dirpath, name))
+
+    def find(self, name, prefer_dir=None, what="file"):
+        """Returns (path, problem). problem is None when exactly one file was found."""
+        name = os.path.expanduser(str(name))
+        if os.path.isabs(name) or os.sep in name:
+            path = name if os.path.isabs(name) else os.path.join(self.root, name)
+            return path, None if os.path.isfile(path) else f"{what} not found: {path}"
+        for folder in filter(None, (prefer_dir, self.root)):
+            direct = os.path.join(folder, name)
+            if os.path.isfile(direct):
+                return direct, None
+        if not os.path.isdir(self.root):
+            return os.path.join(self.root, name), f"{what} not found: video_dir {self.root} doesn't exist"
+        if self._index is None:
+            self._build()
+        matches = self._index.get(name.casefold(), [])
+        if len(matches) == 1:
+            return matches[0], None
+        if not matches:
+            return os.path.join(self.root, name), (f"{what} not found: {name} (looked in {self.root} "
+                                                    "and every folder under it)")
+        listed = "\n       ".join(os.path.relpath(m, self.root) for m in matches)
+        return matches[0], (f"{what}: {len(matches)} files named {name} under {self.root}; put the "
+                            f"folder in filename to pick one:\n       {listed}")
+
+
 def check_thumbnail(path, problems):
     ext = os.path.splitext(path)[1].lower()
     if ext not in THUMBNAIL_TYPES:

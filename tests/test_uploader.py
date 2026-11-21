@@ -856,3 +856,96 @@ def test_updater_fix_schedule(tmp_path, capsys):
     fake = FakeYouTube(current={"VID": draft})
     assert draft_updater.main(["--vids", f, "--yes", "--fix-schedule"], youtube=fake) == 0
     assert yt.seconds_until(fake.videos().updated[0][1]["status"]["publishAt"]) > 15 * 60
+
+
+# ---------------------------------------------------------------- finding files in dated folders
+
+@pytest.fixture
+def finals(tmp_path):
+    """Finals/2025/..., Finals/2026/... like the Dropbox layout."""
+    root = tmp_path / "Finals"
+    files = {
+        "2025/2025-03-01/NS Arr 20250301.mov": b"v",
+        "2026/2026-05-20/BNSF 674 yard job 20260520.mov": b"v",
+        "2026/2026-05-20/BNSF 674 yard job 20260520.jpg": b"\xff\xd8",
+        "2026/2026-06-01/MARTA CQ400 20260601.mov": b"v",
+        "2026/2026-06-01/thumb.jpg": b"\xff\xd8",
+        "2026/2026-06-02/thumb.jpg": b"\xff\xd8",
+        "2026/2026-06-02/same name.mov": b"v",
+        "2025/2025-06-02/same name.mov": b"v",
+        ".dropbox.cache/2026/MARTA CQ400 20260601.mov": b"v",   # hidden: ignored
+    }
+    for rel, data in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+    return root
+
+
+def test_finder_bare_name_found_in_dated_folder(finals):
+    path, problem = yt.FileFinder(str(finals)).find("BNSF 674 yard job 20260520.mov")
+    assert problem is None and path.endswith("2026/2026-05-20/BNSF 674 yard job 20260520.mov")
+
+
+def test_finder_ignores_hidden_folders(finals):
+    path, problem = yt.FileFinder(str(finals)).find("MARTA CQ400 20260601.mov")
+    assert problem is None and ".dropbox.cache" not in path
+
+
+def test_finder_is_case_insensitive(finals):
+    path, problem = yt.FileFinder(str(finals)).find("ns arr 20250301.MOV")
+    assert problem is None and path.endswith("NS Arr 20250301.mov")
+
+
+def test_finder_ambiguous_lists_matches(finals):
+    _, problem = yt.FileFinder(str(finals)).find("same name.mov")
+    assert "2 files named same name.mov" in problem
+    assert "2025/2025-06-02/same name.mov" in problem and "2026/2026-06-02/same name.mov" in problem
+
+
+def test_finder_subfolder_path_picks_one(finals):
+    path, problem = yt.FileFinder(str(finals)).find("2026/2026-06-02/same name.mov")
+    assert problem is None and path == str(finals / "2026/2026-06-02/same name.mov")
+
+
+def test_finder_not_found_message(finals):
+    _, problem = yt.FileFinder(str(finals)).find("nope.mov")
+    assert problem.startswith("file not found: nope.mov") and "every folder under it" in problem
+
+
+def test_finder_does_not_walk_when_file_is_direct(tmp_path, monkeypatch):
+    (tmp_path / "a.mov").write_bytes(b"v")
+    walked = []
+    monkeypatch.setattr(yt.os, "walk", lambda *a, **k: walked.append(1) or iter(()))
+    path, problem = yt.FileFinder(str(tmp_path)).find("a.mov")
+    assert problem is None and walked == []
+
+
+def test_finder_walks_once_per_run(finals, monkeypatch):
+    real_walk, walks = os.walk, []
+    monkeypatch.setattr(yt.os, "walk", lambda *a, **k: walks.append(1) or real_walk(*a, **k))
+    f = yt.FileFinder(str(finals))
+    f.find("BNSF 674 yard job 20260520.mov")
+    f.find("MARTA CQ400 20260601.mov")
+    assert len(walks) == 1
+
+
+def test_uploader_finds_video_and_thumbnail_in_dated_folders(finals, tmp_path, capsys):
+    y = write_yaml(tmp_path / "v.yml", f"video_dir: '{finals}'\nvideos:\n"
+                   "  - {filename: BNSF 674 yard job 20260520.mov, title: BNSF 674,"
+                   " thumbnail: BNSF 674 yard job 20260520.jpg}\n"
+                   "  - {filename: MARTA CQ400 20260601.mov, title: MARTA, thumbnail: thumb.jpg}\n")
+    assert aaron_uploader.main(["--vids", y, "--dry-run", "--no-channel-check",
+                                "--log", str(tmp_path / "l.json")]) == 0
+    jobs = [aaron_uploader.build_job(v, str(finals))[0] for v in yt.load_yaml(y)["videos"]]
+    assert jobs[0]["path"].endswith("2026-05-20/BNSF 674 yard job 20260520.mov")
+    # thumb.jpg exists in two folders; the one next to the video wins
+    assert jobs[1]["thumbnail"] == str(finals / "2026/2026-06-01/thumb.jpg")
+
+
+def test_uploader_ambiguous_name_blocks_batch(finals, tmp_path, capsys):
+    y = write_yaml(tmp_path / "v.yml", f"video_dir: '{finals}'\nvideos:\n"
+                   "  - {filename: same name.mov, title: X}\n")
+    assert aaron_uploader.main(["--vids", y, "--dry-run", "--no-channel-check",
+                                "--log", str(tmp_path / "l.json")]) == 2
+    assert "put the folder in filename" in capsys.readouterr().out

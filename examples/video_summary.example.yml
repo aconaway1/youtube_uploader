@@ -5,12 +5,17 @@
 # Every field the uploader understands is shown below. Only filename and
 # title are required; delete any other line to use its default.
 
-# Folder holding the videos (and thumbnails). ~ works. A relative path is
-# relative to this YAML file. Default: the folder this file is in.
-video_dir: "~/Movies/Shorts"
+# Top folder for videos and thumbnails. They can be in this folder or in any
+# folder under it (e.g. dated folders), so a bare file name is enough. ~ works;
+# a relative path is relative to this YAML file. Default: this file's folder.
+video_dir: "~/Library/CloudStorage/Dropbox/Video/Finals"
 
 videos:
-  - filename: "BNSF 674 yard job 20260520.mov"   # REQUIRED. Relative to video_dir, or a full path
+  - filename: "BNSF 674 yard job 20260520.mov"   # REQUIRED. Just the name: found in video_dir or
+                                                 # any folder under it. If two folders have a file
+                                                 # with this name, give the folder too, e.g.
+                                                 # "2026/2026-05-20/BNSF 674 yard job 20260520.mov".
+                                                 # A full path also works
     title: "BNSF 674 Sansa Fe Pulling a Yard Job 20260520 #FreightTrain"
                                                  # REQUIRED. Max 100 characters, no < or >
 
@@ -34,8 +39,9 @@ videos:
     recordingDate: 2026-05-20        # Shoot date: 2026-05-20 or 20260520
     madeForKids: false               # Default false
     language: "en"                   # Title/description and audio language. Default "en"
-    thumbnail: "BNSF 674 thumb.jpg"  # .jpg or .png, max 50 MB, relative to video_dir.
-                                     # Set once YouTube finishes processing the video
+    thumbnail: "BNSF 674 thumb.jpg"  # .jpg or .png, max 50 MB. Looked for next to the video
+                                     # first, then anywhere under video_dir. Set once YouTube
+                                     # finishes processing the video
 
   # A minimal entry:
   - filename: "MARTA CQ400 Five Points 20260601.mov"

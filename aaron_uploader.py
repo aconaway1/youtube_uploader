@@ -51,8 +51,12 @@ def log_key(path):
 # Building the request
 # --------------------------------------------------------------------------
 
-def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
-    """Validate one YAML entry. Returns (job, problems)."""
+def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES, finder=None):
+    """Validate one YAML entry. Returns (job, problems).
+
+    A bare filename is searched for in video_dir and all its subfolders.
+    """
+    finder = finder or yt.FileFinder(video_dir)
     problems = []
     if not isinstance(vid, dict):
         return None, ["entry is not a mapping"]
@@ -60,9 +64,9 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
     filename = vid.get("filename")
     if not filename:
         return None, ["missing filename"]
-    path = os.path.join(video_dir, os.path.expanduser(str(filename)))
-    if not os.path.isfile(path):
-        problems.append(f"file not found: {path}")
+    path, problem = finder.find(filename)
+    if problem:
+        problems.append(problem)
 
     title = str(vid.get("title") or "").strip()
     if not title:
@@ -118,8 +122,16 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES):
 
     thumbnail = None
     if vid.get("thumbnail"):
-        thumbnail = yt.resolve_path(vid["thumbnail"], video_dir)
-        yt.check_thumbnail(thumbnail, problems)
+        if os.path.splitext(str(vid["thumbnail"]))[1].lower() not in yt.THUMBNAIL_TYPES:
+            problems.append(f"thumbnail must be .jpg or .png: {vid['thumbnail']}")
+        else:
+            # Look next to the video first, then anywhere under video_dir.
+            thumbnail, problem = finder.find(vid["thumbnail"], prefer_dir=os.path.dirname(path),
+                                             what="thumbnail")
+            if problem:
+                problems.append(problem)
+            else:
+                yt.check_thumbnail(thumbnail, problems)
 
     return {"path": path, "filename": str(filename), "body": body, "thumbnail": thumbnail,
             "too_soon": too_soon, "may_move_schedule": False}, problems
@@ -214,9 +226,10 @@ def main(argv=None, youtube=None):
     if not os.path.isabs(video_dir):
         video_dir = os.path.join(base, video_dir)
 
+    finder = yt.FileFinder(video_dir)  # lists the folder tree once, only if a search is needed
     jobs, bad = [], 0
     for i, vid in enumerate(data["videos"], 1):
-        job, problems = build_job(vid, video_dir, args.min_lead)
+        job, problems = build_job(vid, video_dir, args.min_lead, finder)
         label = job["filename"] if job else f"entry {i}"
         for p in problems:
             print(f"ERROR {label}: {p}")

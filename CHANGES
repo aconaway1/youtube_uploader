@@ -23,6 +23,8 @@ Version 0.3
   public, unlisted or scheduled (`--yes` to skip; refuses when not in a terminal);
   publishAt must be 15+ minutes away (`--min-lead`), re-checked before each upload.
   The updater now reads and shows every change before saving any.
+- Uploader: a bare `filename` (and `thumbnail`) is found in `video_dir` or any folder
+  under it, for dated folder trees; ambiguous names are an error listing the matches
 - A publishAt that's too close can be moved to 15 minutes from now: asked y/N in a
   terminal, or automatically with `--fix-schedule` (both scripts)
 - Examples list every supported field, with defaults and limits; a test keeps
