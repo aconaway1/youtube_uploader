@@ -67,6 +67,8 @@ class FakeVideos:
                             "status": {"privacyStatus": v.get("privacyStatus", "public")}}
                     if v.get("publishAt"):
                         item["status"]["publishAt"] = v["publishAt"]
+                    if v.get("publishedAt"):
+                        item["snippet"] = {"publishedAt": v["publishedAt"]}
                     if v.get("size"):
                         w, h = v["size"]
                         item["fileDetails"]["videoStreams"] = [{"widthPixels": w, "heightPixels": h}]
@@ -1162,9 +1164,9 @@ def test_upcoming_render():
     lines = upcoming.render(channel, days=5, today=today)
     text = "\n".join(lines)
     assert lines[1].endswith("open")                                       # today
-    assert '1:00 PM  Short  "Short tomorrow"' in lines[2]
-    assert '6:00 PM  Video  "Long day 2"' in lines[3] and lines[3].endswith("(no Short: open)")
-    assert '9:05 AM  Short  "Short day 3"' in lines[4]                       # sorted by time
+    assert '1:00 PM  Short  scheduled  "Short tomorrow"' in lines[2]
+    assert '6:00 PM  Video  scheduled  "Long day 2"' in lines[3] and lines[3].endswith("(no Short: open)")
+    assert '9:05 AM  Short  scheduled  "Short day 3"' in lines[4]            # sorted by time
     assert '"Second short day 3"' in lines[5] and not lines[5].strip().startswith(upcoming._day(today))
     assert lines[6].endswith("open")                                       # day 4
     assert "3 Shorts scheduled, 3 open days. 1 more scheduled after" in text
@@ -1394,3 +1396,62 @@ def test_as_name_list_does_not_split_commas():
     assert yt.as_name_list("Galesburg, Illinois") == ["Galesburg, Illinois"]
     assert yt.as_name_list(["A", " B ", ""]) == ["A", "B"]
     assert yt.as_name_list(None) == []
+
+
+
+# ---------------------------------------------------------------- a day with a published Short is taken
+
+def minutes_ago(m):
+    return (datetime.datetime.now().astimezone() - datetime.timedelta(minutes=m)).isoformat()
+
+
+def test_channel_videos_records_published_at_only_for_public():
+    existing = [
+        {"id": "P", "title": "Public", "fileName": "p.mov", "privacyStatus": "public",
+         "publishedAt": minutes_ago(60)},
+        {"id": "Q", "title": "Private", "fileName": "q.mov", "privacyStatus": "private",
+         "publishedAt": minutes_ago(60)},
+    ]
+    got = {v["id"]: v for v in yt.channel_videos(FakeYouTube(existing=existing))}
+    assert got["P"]["publishedAt"] and got["Q"]["publishedAt"] is None
+
+
+def test_schedule_skips_today_if_a_short_went_public_today(tmp_path):
+    jobs = make_jobs(tmp_path, [{"filename": "a.mov", "title": "A"}, {"filename": "b.mov", "title": "B"}])
+    channel = [{"id": "T", "title": "Went live this morning", "isShort": True,
+                "privacyStatus": "public", "publishAt": None, "publishedAt": minutes_ago(1)}]
+    late = (datetime.datetime.now() + datetime.timedelta(hours=1)).time().replace(second=0, microsecond=0)
+    if late < datetime.datetime.now().time():  # near midnight: skip, today has no later slot
+        pytest.skip("too close to midnight")
+    sched = {"time": late, "start": datetime.date.today()}
+    plan = uploader.assign_slots(jobs, sched, channel, min_lead=15)
+    got = [yt.local_date(j["body"]["status"]["publishAt"]) for j in jobs]
+    assert got == [day_at(1).date(), day_at(2).date()]
+    assert plan[0] == (datetime.date.today(), None, "Went live this morning (published)")
+
+
+def test_published_long_form_does_not_take_today(tmp_path):
+    jobs = make_jobs(tmp_path, [{"filename": "a.mov", "title": "A"}])
+    channel = [{"id": "L", "title": "Long", "isShort": False, "privacyStatus": "public",
+                "publishAt": None, "publishedAt": minutes_ago(1)}]
+    late = (datetime.datetime.now() + datetime.timedelta(hours=1)).time().replace(second=0, microsecond=0)
+    if late < datetime.datetime.now().time():
+        pytest.skip("too close to midnight")
+    uploader.assign_slots(jobs, {"time": late, "start": datetime.date.today()}, channel, min_lead=15)
+    assert yt.local_date(jobs[0]["body"]["status"]["publishAt"]) == datetime.date.today()
+
+
+def test_upcoming_shows_todays_published_short_and_counts_today_taken():
+    channel = [
+        {"id": "T", "title": "A6 this morning", "isShort": True, "privacyStatus": "public",
+         "publishAt": None, "publishedAt": minutes_ago(1)},
+        {"id": "S1", "title": "Tomorrow", "isShort": True, "publishAt": day_at(1).isoformat()},
+        {"id": "OLD", "title": "Last week", "isShort": True, "privacyStatus": "public",
+         "publishAt": None, "publishedAt": day_at(-7).isoformat()},
+    ]
+    lines = upcoming.render(channel, days=3)
+    text = "\n".join(lines)
+    assert 'published  "A6 this morning"' in lines[1] and "open" not in lines[1]
+    assert 'scheduled  "Tomorrow"' in lines[2]
+    assert "Last week" not in text
+    assert "1 Short scheduled, 1 open day." in text

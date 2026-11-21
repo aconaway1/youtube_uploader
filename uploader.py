@@ -227,8 +227,8 @@ def parse_schedule(cfg, today=None):
 def assign_slots(jobs, sched, channel, min_lead, now=None):
     """Give each job without its own publishAt the next day with no Short scheduled.
 
-    Days with a Short already scheduled on the channel, or a publishAt given in
-    this batch, are skipped. Returns [(date, job or None, taken_title)] for the
+    Days with a Short already scheduled or already published on the channel,
+    or a publishAt given in this batch, are skipped. Returns [(date, job or None, taken_title)] for the
     calendar printout, from the start date through the last assigned day.
     """
     now = now or datetime.datetime.now().astimezone()
@@ -236,6 +236,10 @@ def assign_slots(jobs, sched, channel, min_lead, now=None):
     for v in yt.scheduled_videos(channel, now):
         if v.get("isShort"):
             taken.setdefault(yt.local_date(v["publishAt"]), v["title"])
+    # A day where a Short already went public is taken too (e.g. today).
+    for v in yt.published_between(channel, sched["start"], datetime.date.max):
+        if v.get("isShort"):
+            taken.setdefault(yt.local_date(v["publishedAt"]), v["title"] + " (published)")
     for job in jobs:
         if job["own_publish_at"]:
             taken.setdefault(yt.local_date(job["body"]["status"]["publishAt"]),

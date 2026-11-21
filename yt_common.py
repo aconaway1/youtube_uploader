@@ -489,7 +489,7 @@ def looks_like_short(item):
 
 def channel_videos(youtube):
     """Every video on the signed-in channel:
-    [{id, title, fileName, isShort, privacyStatus, publishAt}].
+    [{id, title, fileName, isShort, privacyStatus, publishAt, publishedAt}].
 
     fileName is the name of the file originally uploaded (owner-only data;
     empty for some very old videos). publishAt is set for scheduled videos.
@@ -515,7 +515,7 @@ def channel_videos(youtube):
     live = []
     for i in range(0, len(videos), 50):
         chunk = videos[i:i + 50]
-        resp = youtube.videos().list(part="fileDetails,status,contentDetails",
+        resp = youtube.videos().list(part="snippet,fileDetails,status,contentDetails",
                                      id=",".join(v["id"] for v in chunk)).execute()
         details = {it["id"]: it for it in resp.get("items", [])}
         for v in chunk:
@@ -529,6 +529,10 @@ def channel_videos(youtube):
             v["isShort"] = looks_like_short(item)
             v["privacyStatus"] = status.get("privacyStatus", "")
             v["publishAt"] = status.get("publishAt") if status.get("privacyStatus") == "private" else None
+            # For a public video, snippet.publishedAt is when it went public (not when it
+            # was uploaded), so a scheduled Short that went live today counts for today.
+            v["publishedAt"] = (item.get("snippet", {}).get("publishedAt")
+                                if status.get("privacyStatus") == "public" else None)
             live.append(v)
     return live
 
@@ -538,6 +542,13 @@ def scheduled_videos(videos, now=None):
     now = now or datetime.datetime.now().astimezone()
     out = [v for v in videos if v.get("publishAt") and _as_datetime(v["publishAt"]) > now]
     return sorted(out, key=lambda v: _as_datetime(v["publishAt"]))
+
+
+def published_between(videos, first_day, last_day):
+    """Public videos that went public on a local date from first_day to last_day."""
+    out = [v for v in videos if v.get("publishedAt")
+           and first_day <= local_date(v["publishedAt"]) <= last_day]
+    return sorted(out, key=lambda v: _as_datetime(v["publishedAt"]))
 
 
 def local_date(value):
