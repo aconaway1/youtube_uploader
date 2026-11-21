@@ -10,6 +10,14 @@
 # a relative path is relative to this YAML file. Default: this file's folder.
 video_dir: "~/Library/CloudStorage/Dropbox/Video/Finals"
 
+# Optional: schedule the videos below one per day. Each video without its own
+# publishAt gets the next day that has no Short already scheduled on the
+# channel (long-form videos don't block a day). Start defaults to tomorrow.
+# Delete this block to upload everything as given.
+schedule:
+  time: "13:00"                    # local time each video goes public
+  start: 2026-11-22                # optional; first day to try
+
 videos:
   - filename: "BNSF 674 yard job 20260520.mov"   # REQUIRED. Just the name: found in video_dir or
                                                  # any folder under it. If two folders have a file
@@ -42,6 +50,8 @@ videos:
     thumbnail: "BNSF 674 thumb.jpg"  # .jpg or .png, max 50 MB. Looked for next to the video
                                      # first, then anywhere under video_dir. Set once YouTube
                                      # finishes processing the video
+    skipSchedule: false              # true = don't give this one a schedule slot
+                                     # (it keeps the privacyStatus above)
 
   # A minimal entry:
   - filename: "MARTA CQ400 Five Points 20260601.mov"

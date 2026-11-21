@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Show what's scheduled to go public on the channel, day by day.
+
+    python upcoming.py              # next 14 days
+    python upcoming.py --days 30
+
+Days without a scheduled Short are marked "open"; those are the days the
+uploader's `schedule:` block fills. Long-form videos are listed but don't
+fill a day. Costs about 1 quota unit per 25 videos on the channel.
+"""
+import argparse
+import datetime
+import sys
+
+from googleapiclient.errors import HttpError
+
+import yt_common as yt
+
+
+def render(channel, days, today=None, now=None):
+    """Lines of the day-by-day view."""
+    now = now or datetime.datetime.now().astimezone()
+    today = today or now.date()
+    end = today + datetime.timedelta(days=days - 1)
+    upcoming = yt.scheduled_videos(channel, now)
+
+    by_day = {}
+    for v in upcoming:
+        by_day.setdefault(yt.local_date(v["publishAt"]), []).append(v)
+
+    lines = [f"Scheduled to go public, {_day(today)} through {_day(end)}:"]
+    open_days = shorts = 0
+    for i in range(days):
+        day = today + datetime.timedelta(days=i)
+        videos = by_day.get(day, [])
+        if not any(v.get("isShort") for v in videos):
+            open_days += 1
+        if not videos:
+            lines.append(f"  {_day(day)}  open")
+            continue
+        for n, v in enumerate(videos):
+            shorts += bool(v.get("isShort"))
+            kind = "Short" if v.get("isShort") else "Video"
+            time = yt._as_datetime(v["publishAt"]).astimezone().strftime("%I:%M %p").lstrip("0")
+            prefix = _day(day) if n == 0 else " " * len(_day(day))
+            lines.append(f"  {prefix}  {time:>8}  {kind:5}  \"{v['title']}\"  https://youtu.be/{v['id']}")
+        if not any(v.get("isShort") for v in videos):
+            lines[-1] += "   (no Short: open)"
+
+    later = [v for v in upcoming if yt.local_date(v["publishAt"]) > end]
+    lines.append("")
+    lines.append(f"{shorts} Short{'s' if shorts != 1 else ''} scheduled, "
+                 f"{open_days} open day{'s' if open_days != 1 else ''}."
+                 + (f" {len(later)} more scheduled after {_day(end)}." if later else ""))
+    return lines
+
+
+def _day(d):
+    return d.strftime("%a %b %d").replace(" 0", " ")
+
+
+def main(argv=None, youtube=None):
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--days", type=int, default=14, help="how many days to show (default 14)")
+    args = parser.parse_args(argv)
+    if args.days < 1:
+        parser.error("--days must be at least 1")
+
+    youtube = youtube or yt.get_youtube()
+    try:
+        channel = yt.channel_videos(youtube)
+    except HttpError as e:
+        print(f"Couldn't read the channel's videos: HTTP {e.resp.status} {yt.http_error_reason(e)}")
+        return 1
+    print("\n".join(render(channel, args.days)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

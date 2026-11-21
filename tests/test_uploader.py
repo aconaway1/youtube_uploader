@@ -58,9 +58,19 @@ class FakeVideos:
         self.list_calls += 1
         items = []
         for vid in id.split(","):
-            if part == "fileDetails":
+            if "fileDetails" in part:
                 if vid in self.files:
-                    items.append({"id": vid, "fileDetails": {"fileName": self.files[vid]}})
+                    v = self.files[vid]
+                    item = {"id": vid,
+                            "fileDetails": {"fileName": v.get("fileName", "")},
+                            "contentDetails": {"duration": v.get("duration", "PT45S")},
+                            "status": {"privacyStatus": v.get("privacyStatus", "public")}}
+                    if v.get("publishAt"):
+                        item["status"]["publishAt"] = v["publishAt"]
+                    if v.get("size"):
+                        w, h = v["size"]
+                        item["fileDetails"]["videoStreams"] = [{"widthPixels": w, "heightPixels": h}]
+                    items.append(item)
                 continue
             if vid in self.current:
                 items.append(self.current[vid])
@@ -123,7 +133,7 @@ class FakeYouTube:
         self.channel = FakeChannel(existing or [])
         for v in existing or []:
             if not v.get("deleted"):  # deleted videos are still in the uploads list, briefly
-                self._videos.files[v["id"]] = v.get("fileName", "")
+                self._videos.files[v["id"]] = v
 
     def videos(self):
         return self._videos
@@ -617,7 +627,8 @@ def test_log_hit_without_channel_check_still_skips(workdir, capsys):
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
 UPLOADER_KEYS = {"filename", "title", "description", "keywords", "categoryId", "privacyStatus",
-                 "publishAt", "recordingDate", "madeForKids", "language", "thumbnail"}
+                 "publishAt", "recordingDate", "madeForKids", "language", "thumbnail",
+                 "skipSchedule"}
 UPDATER_KEYS = {"url", "title", "description", "keywords", "categoryId", "language",
                 "privacyStatus", "publishAt", "recordingDate", "madeForKids", "thumbnail"}
 
@@ -949,3 +960,181 @@ def test_uploader_ambiguous_name_blocks_batch(finals, tmp_path, capsys):
     assert aaron_uploader.main(["--vids", y, "--dry-run", "--no-channel-check",
                                 "--log", str(tmp_path / "l.json")]) == 2
     assert "put the folder in filename" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- scheduling one Short per day
+
+def day_at(days_from_today, hhmm="13:00"):
+    d = datetime.date.today() + datetime.timedelta(days=days_from_today)
+    t = datetime.datetime.strptime(hhmm, "%H:%M").time()
+    return datetime.datetime.combine(d, t).astimezone()
+
+
+def test_parse_schedule():
+    tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+    assert aaron_uploader.parse_schedule({"time": "13:00"})[0] == \
+        {"time": datetime.time(13, 0), "start": tomorrow}
+    # unquoted 13:00 in YAML arrives as 780
+    import yaml
+    cfg = yaml.safe_load("time: 13:00\nstart: 2027-01-05\n")
+    sched, problems = aaron_uploader.parse_schedule(cfg)
+    assert problems == [] and sched == {"time": datetime.time(13, 0), "start": datetime.date(2027, 1, 5)}
+    assert aaron_uploader.parse_schedule({"time": "1pm"})[1]
+    assert aaron_uploader.parse_schedule({"time": "13:00", "every": 2})[1]
+    assert aaron_uploader.parse_schedule("13:00")[1]
+    assert aaron_uploader.parse_schedule(None) == (None, [])
+
+
+def make_jobs(tmp_path, entries):
+    (tmp_path / "vids").mkdir(exist_ok=True)
+    jobs = []
+    for e in entries:
+        (tmp_path / "vids" / e["filename"]).write_bytes(b"v")
+        job, problems = aaron_uploader.build_job(e, str(tmp_path / "vids"), min_lead=0)
+        assert problems == []
+        jobs.append(job)
+    return jobs
+
+
+def test_assign_slots_skips_days_with_scheduled_shorts(tmp_path):
+    channel = [
+        {"id": "S2", "title": "Short on day 2", "isShort": True, "publishAt": day_at(2).isoformat()},
+        {"id": "L3", "title": "Long on day 3", "isShort": False, "publishAt": day_at(3).isoformat()},
+        {"id": "OLD", "title": "Published", "isShort": True, "publishAt": None},
+    ]
+    jobs = make_jobs(tmp_path, [{"filename": f"{n}.mov", "title": n} for n in "abc"])
+    sched = {"time": datetime.time(13, 0), "start": datetime.date.today() + datetime.timedelta(days=1)}
+    plan = aaron_uploader.assign_slots(jobs, sched, channel, min_lead=15)
+    got = [yt.local_date(j["body"]["status"]["publishAt"]) for j in jobs]
+    assert got == [day_at(1).date(), day_at(3).date(), day_at(4).date()]  # day 2 taken; long-form doesn't block
+    assert all(j["body"]["status"]["privacyStatus"] == "private" for j in jobs)
+    assert [(d, j is not None, t) for d, j, t in plan] == [
+        (day_at(1).date(), True, None), (day_at(2).date(), False, "Short on day 2"),
+        (day_at(3).date(), True, None), (day_at(4).date(), True, None)]
+
+
+def test_assign_slots_respects_own_publish_at_and_skip(tmp_path):
+    jobs = make_jobs(tmp_path, [
+        {"filename": "a.mov", "title": "A"},
+        {"filename": "b.mov", "title": "B", "publishAt": day_at(2).strftime("%Y-%m-%d %H:%M")},
+        {"filename": "c.mov", "title": "C", "skipSchedule": True},
+        {"filename": "d.mov", "title": "D"},
+    ])
+    sched = {"time": datetime.time(9, 30), "start": datetime.date.today() + datetime.timedelta(days=1)}
+    aaron_uploader.assign_slots(jobs, sched, [], min_lead=15)
+    a, b, c, d = jobs
+    assert yt.local_date(a["body"]["status"]["publishAt"]) == day_at(1).date()
+    assert yt.local_date(b["body"]["status"]["publishAt"]) == day_at(2).date()   # its own time, kept
+    assert "publishAt" not in c["body"]["status"]                                 # skipped
+    assert yt.local_date(d["body"]["status"]["publishAt"]) == day_at(3).date()   # day 2 was B's
+    assert _as_time(a) == datetime.time(9, 30)
+
+
+def _as_time(job):
+    return datetime.datetime.fromisoformat(job["body"]["status"]["publishAt"]).time()
+
+
+def test_assign_slots_today_too_late_moves_to_tomorrow(tmp_path):
+    jobs = make_jobs(tmp_path, [{"filename": "a.mov", "title": "A"}])
+    past = (datetime.datetime.now() - datetime.timedelta(hours=1)).time().replace(second=0, microsecond=0)
+    sched = {"time": past, "start": datetime.date.today()}
+    aaron_uploader.assign_slots(jobs, sched, [], min_lead=15)
+    assert yt.local_date(jobs[0]["body"]["status"]["publishAt"]) == day_at(1).date()
+
+
+def sched_yaml(workdir, extra=""):
+    return write_yaml(workdir / "v.yml", "video_dir: vids\nschedule:\n  time: 13:00\n" + extra +
+                      "videos:\n  - {filename: a.mov, title: A}\n  - {filename: b.mov, title: B}\n")
+
+
+def test_schedule_dry_run_shows_plan(workdir, capsys):
+    f = sched_yaml(workdir)
+    existing = [{"id": "S1", "title": "Already Tomorrow", "fileName": "x.mov", "duration": "PT40S",
+                 "privacyStatus": "private", "publishAt": day_at(1).isoformat(), "size": (1080, 1920)}]
+    fake = FakeYouTube(existing=existing)
+    assert aaron_uploader.main(["--vids", f, "--dry-run", "--log", str(workdir / "l.json")],
+                               youtube=fake) == 0
+    out = capsys.readouterr().out
+    assert "Scheduling 2 videos, one per open day at 1:00 PM" in out
+    assert '(taken: "Already Tomorrow")' in out
+    assert out.count("goes PUBLIC") == 2 and fake.videos().inserted == []
+
+
+def test_schedule_upload_sends_assigned_times(workdir):
+    f = sched_yaml(workdir)
+    existing = [{"id": "L1", "title": "Long", "fileName": "x.mov", "duration": "PT12M",
+                 "privacyStatus": "private", "publishAt": day_at(1).isoformat(), "size": (1920, 1080)}]
+    fake = FakeYouTube(existing=existing, insert_results=[{"id": "1"}, {"id": "2"}])
+    assert aaron_uploader.main(["--vids", f, "--yes", "--log", str(workdir / "l.json")],
+                               youtube=fake) == 0
+    sent = [yt.local_date(b["status"]["publishAt"]) for _, b in fake.videos().inserted]
+    assert sent == [day_at(1).date(), day_at(2).date()]  # long-form on day 1 doesn't block it
+
+
+def test_schedule_needs_channel_check(workdir, capsys):
+    f = sched_yaml(workdir)
+    assert aaron_uploader.main(["--vids", f, "--dry-run", "--no-channel-check",
+                                "--log", str(workdir / "l.json")]) == 2
+    assert "needs the channel check" in capsys.readouterr().out
+
+
+def test_schedule_skips_duplicates_when_assigning(workdir, capsys):
+    f = sched_yaml(workdir)
+    existing = [{"id": "D", "title": "A", "fileName": "a.mov", "duration": "PT30S"}]  # a.mov already up
+    fake = FakeYouTube(existing=existing, insert_results=[{"id": "2"}])
+    assert aaron_uploader.main(["--vids", f, "--yes", "--log", str(workdir / "l.json")],
+                               youtube=fake) == 0
+    sent = [(b["snippet"]["title"], yt.local_date(b["status"]["publishAt"])) for _, b in fake.videos().inserted]
+    assert sent == [("B", day_at(1).date())]  # B gets tomorrow, not the duplicate
+
+
+@pytest.mark.parametrize("duration,size,short", [
+    ("PT45S", (1080, 1920), True), ("PT2M59S", None, True), ("PT3M1S", (1080, 1920), False),
+    ("PT30S", (1920, 1080), False), ("PT1H2M3S", None, False), ("P0D", None, True), ("", None, False)])
+def test_looks_like_short(duration, size, short):
+    item = {"contentDetails": {"duration": duration}, "fileDetails": {}}
+    if size:
+        item["fileDetails"]["videoStreams"] = [{"widthPixels": size[0], "heightPixels": size[1]}]
+    assert yt.looks_like_short(item) is short
+
+
+def test_looks_like_short_handles_rotation():
+    item = {"contentDetails": {"duration": "PT20S"},
+            "fileDetails": {"videoStreams": [{"widthPixels": 1920, "heightPixels": 1080,
+                                              "rotation": "clockwise"}]}}
+    assert yt.looks_like_short(item) is True
+
+
+# ---------------------------------------------------------------- upcoming.py
+
+import upcoming  # noqa: E402
+
+
+def test_upcoming_render():
+    today = datetime.date.today()
+    channel = [
+        {"id": "S1", "title": "Short tomorrow", "isShort": True, "publishAt": day_at(1).isoformat()},
+        {"id": "L1", "title": "Long day 2", "isShort": False, "publishAt": day_at(2, "18:00").isoformat()},
+        {"id": "S3", "title": "Short day 3", "isShort": True, "publishAt": day_at(3, "09:05").isoformat()},
+        {"id": "S3b", "title": "Second short day 3", "isShort": True, "publishAt": day_at(3).isoformat()},
+        {"id": "S20", "title": "Far away", "isShort": True, "publishAt": day_at(20).isoformat()},
+        {"id": "P", "title": "Published", "isShort": True, "publishAt": None},
+    ]
+    lines = upcoming.render(channel, days=5, today=today)
+    text = "\n".join(lines)
+    assert lines[1].endswith("open")                                       # today
+    assert '1:00 PM  Short  "Short tomorrow"' in lines[2]
+    assert '6:00 PM  Video  "Long day 2"' in lines[3] and lines[3].endswith("(no Short: open)")
+    assert '9:05 AM  Short  "Short day 3"' in lines[4]                       # sorted by time
+    assert '"Second short day 3"' in lines[5] and not lines[5].strip().startswith(upcoming._day(today))
+    assert lines[6].endswith("open")                                       # day 4
+    assert "3 Shorts scheduled, 3 open days. 1 more scheduled after" in text
+    assert "Published" not in text
+
+
+def test_upcoming_main_with_fake_channel(capsys):
+    existing = [{"id": "S1", "title": "Tomorrow", "fileName": "x.mov", "duration": "PT30S",
+                 "privacyStatus": "private", "publishAt": day_at(1).isoformat(), "size": (1080, 1920)}]
+    assert upcoming.main(["--days", "3"], youtube=FakeYouTube(existing=existing)) == 0
+    out = capsys.readouterr().out
+    assert '"Tomorrow"' in out and "1 Short scheduled, 2 open days." in out

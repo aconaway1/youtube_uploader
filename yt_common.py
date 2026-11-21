@@ -6,6 +6,7 @@ parsing/validation helpers both scripts need.
 import datetime
 import os
 import random
+import re
 import sys
 import time
 from urllib.parse import parse_qs, urlparse
@@ -459,12 +460,41 @@ def normalize_title(title):
     return " ".join(str(title).split()).casefold()
 
 
+def parse_duration(value):
+    """ISO 8601 duration ('PT1M5S', 'P0D') -> seconds, or None if unparseable."""
+    m = re.fullmatch(r"P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?", str(value or ""))
+    if not m or not value:
+        return None
+    d, h, mi, s = (int(x or 0) for x in m.groups())
+    return ((d * 24 + h) * 60 + mi) * 60 + s
+
+
+SHORT_MAX_SECONDS = 180
+
+
+def looks_like_short(item):
+    """A video resource (with contentDetails and fileDetails) that YouTube would treat as a Short:
+    3 minutes or less and taller than wide. If the dimensions aren't known, length decides."""
+    seconds = parse_duration(item.get("contentDetails", {}).get("duration"))
+    if seconds is None or seconds > SHORT_MAX_SECONDS:
+        return False
+    streams = item.get("fileDetails", {}).get("videoStreams") or []
+    if streams and streams[0].get("widthPixels") and streams[0].get("heightPixels"):
+        st = streams[0]
+        rotated = st.get("rotation") in ("clockwise", "counterClockwise")
+        w, h = (st["heightPixels"], st["widthPixels"]) if rotated else (st["widthPixels"], st["heightPixels"])
+        return h >= w
+    return True
+
+
 def channel_videos(youtube):
-    """Every video on the signed-in channel: [{id, title, fileName}].
+    """Every video on the signed-in channel:
+    [{id, title, fileName, isShort, privacyStatus, publishAt}].
 
     fileName is the name of the file originally uploaded (owner-only data;
-    empty for some very old videos). Costs 1 quota unit per 50 videos for the
-    list, plus 1 per 50 for the file names, plus 1 to find the uploads list.
+    empty for some very old videos). publishAt is set for scheduled videos.
+    Costs 1 quota unit per 50 videos for the list, plus 1 per 50 for the
+    details, plus 1 to find the uploads list.
     """
     channels = youtube.channels().list(part="contentDetails", mine=True).execute().get("items", [])
     if not channels:
@@ -485,17 +515,33 @@ def channel_videos(youtube):
     live = []
     for i in range(0, len(videos), 50):
         chunk = videos[i:i + 50]
-        resp = youtube.videos().list(part="fileDetails",
+        resp = youtube.videos().list(part="fileDetails,status,contentDetails",
                                      id=",".join(v["id"] for v in chunk)).execute()
-        names = {it["id"]: it.get("fileDetails", {}).get("fileName", "")
-                 for it in resp.get("items", [])}
+        details = {it["id"]: it for it in resp.get("items", [])}
         for v in chunk:
             # videos.list leaves out deleted videos, even if the uploads list
             # hasn't caught up with the deletion yet.
-            if v["id"] in names:
-                v["fileName"] = names[v["id"]]
-                live.append(v)
+            item = details.get(v["id"])
+            if item is None:
+                continue
+            status = item.get("status", {})
+            v["fileName"] = item.get("fileDetails", {}).get("fileName", "")
+            v["isShort"] = looks_like_short(item)
+            v["privacyStatus"] = status.get("privacyStatus", "")
+            v["publishAt"] = status.get("publishAt") if status.get("privacyStatus") == "private" else None
+            live.append(v)
     return live
+
+
+def scheduled_videos(videos, now=None):
+    """Videos with a publish time still in the future, soonest first."""
+    now = now or datetime.datetime.now().astimezone()
+    out = [v for v in videos if v.get("publishAt") and _as_datetime(v["publishAt"]) > now]
+    return sorted(out, key=lambda v: _as_datetime(v["publishAt"]))
+
+
+def local_date(value):
+    return _as_datetime(value).astimezone().date()
 
 
 class DuplicateIndex:

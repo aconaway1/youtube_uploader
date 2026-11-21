@@ -99,7 +99,6 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES, finder=None)
             problems.append(str(e))
         if privacy != "private":
             # The API only schedules private videos; they flip public at publishAt.
-            print(f"  note: {filename}: publishAt set, uploading as private until then")
             status["privacyStatus"] = "private"
 
     body = {
@@ -134,7 +133,97 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES, finder=None)
                 yt.check_thumbnail(thumbnail, problems)
 
     return {"path": path, "filename": str(filename), "body": body, "thumbnail": thumbnail,
-            "too_soon": too_soon, "may_move_schedule": False}, problems
+            "too_soon": too_soon, "may_move_schedule": False,
+            "own_publish_at": bool(vid.get("publishAt")),
+            "skip_schedule": bool(vid.get("skipSchedule"))}, problems
+
+
+# --------------------------------------------------------------------------
+# Scheduling: one Short per open day
+# --------------------------------------------------------------------------
+
+def parse_schedule(cfg, today=None):
+    """The YAML `schedule:` block -> ({'time': time, 'start': date}, problems)."""
+    if cfg is None:
+        return None, []
+    if not isinstance(cfg, dict):
+        return None, ["schedule: must look like  schedule: {time: \"13:00\", start: 2026-11-22}"]
+    problems = []
+    t = cfg.get("time")
+    when = None
+    if isinstance(t, int) and not isinstance(t, bool):
+        # YAML reads an unquoted 13:00 as the number 780 (base 60).
+        t = f"{t // 60}:{t % 60:02d}"
+    try:
+        when = datetime.datetime.strptime(str(t).strip(), "%H:%M").time()
+    except ValueError:
+        problems.append(f"schedule: time must look like \"13:00\" (got {cfg.get('time')!r})")
+    today = today or datetime.date.today()
+    start = cfg.get("start")
+    if start is None:
+        start = today + datetime.timedelta(days=1)
+    elif not isinstance(start, datetime.date):
+        try:
+            start = datetime.datetime.strptime(str(start).strip(), "%Y-%m-%d").date()
+        except ValueError:
+            problems.append(f"schedule: start must look like 2026-11-22 (got {cfg.get('start')!r})")
+    if isinstance(start, datetime.datetime):
+        start = start.date()
+    unknown = set(cfg) - {"time", "start"}
+    if unknown:
+        problems.append(f"schedule: unknown setting(s) {', '.join(sorted(unknown))} "
+                        "(only time and start)")
+    return ({"time": when, "start": start} if not problems else None), problems
+
+
+def assign_slots(jobs, sched, channel, min_lead, now=None):
+    """Give each job without its own publishAt the next day with no Short scheduled.
+
+    Days with a Short already scheduled on the channel, or a publishAt given in
+    this batch, are skipped. Returns [(date, job or None, taken_title)] for the
+    calendar printout, from the start date through the last assigned day.
+    """
+    now = now or datetime.datetime.now().astimezone()
+    taken = {}
+    for v in yt.scheduled_videos(channel, now):
+        if v.get("isShort"):
+            taken.setdefault(yt.local_date(v["publishAt"]), v["title"])
+    for job in jobs:
+        if job["own_publish_at"]:
+            taken.setdefault(yt.local_date(job["body"]["status"]["publishAt"]),
+                             job["body"]["snippet"]["title"])
+
+    plan, day = [], sched["start"]
+    earliest = now + datetime.timedelta(minutes=min_lead)
+    for job in jobs:
+        if job["own_publish_at"] or job["skip_schedule"]:
+            continue
+        while True:
+            when = datetime.datetime.combine(day, sched["time"]).astimezone()
+            if day in taken:
+                plan.append((day, None, taken[day]))
+            elif when >= earliest:
+                break
+            day += datetime.timedelta(days=1)
+        job["body"]["status"]["publishAt"] = when.isoformat()
+        job["body"]["status"]["privacyStatus"] = "private"
+        taken[day] = job["body"]["snippet"]["title"]
+        plan.append((day, job, None))
+        day += datetime.timedelta(days=1)
+    return plan
+
+
+def print_plan(plan, sched):
+    n = sum(1 for _, job, _ in plan if job)
+    t = datetime.datetime.combine(datetime.date.today(), sched["time"]).strftime("%I:%M %p").lstrip("0")
+    print(f"\nScheduling {n} video{'s' if n != 1 else ''}, one per open day at {t}:")
+    for day, job, taken_title in plan:
+        label = day.strftime("%a %b %d").replace(" 0", " ")
+        if job:
+            print(f"  {label}  {job['filename']}: \"{job['body']['snippet']['title']}\"")
+        else:
+            print(f"  {label}  (taken: \"{taken_title}\")")
+    print()
 
 
 def upload(youtube, job):
@@ -226,8 +315,16 @@ def main(argv=None, youtube=None):
     if not os.path.isabs(video_dir):
         video_dir = os.path.join(base, video_dir)
 
+    sched, sched_problems = parse_schedule(data.get("schedule"))
+    for p in sched_problems:
+        print(f"ERROR {p}")
+    if sched and args.no_channel_check:
+        print("ERROR schedule: needs the channel check to find open days; "
+              "drop --no-channel-check")
+        sched_problems.append("needs channel check")
+
     finder = yt.FileFinder(video_dir)  # lists the folder tree once, only if a search is needed
-    jobs, bad = [], 0
+    jobs, bad = [], len(sched_problems)
     for i, vid in enumerate(data["videos"], 1):
         job, problems = build_job(vid, video_dir, args.min_lead, finder)
         label = job["filename"] if job else f"entry {i}"
@@ -267,7 +364,8 @@ def main(argv=None, youtube=None):
         youtube = youtube or yt.get_youtube()
         print("Checking the channel for duplicates...")
         try:
-            index = yt.DuplicateIndex(yt.channel_videos(youtube))
+            channel = yt.channel_videos(youtube)
+            index = yt.DuplicateIndex(channel)
         except HttpError as e:
             print(f"Couldn't read the channel's videos: HTTP {e.resp.status} "
                   f"{yt.http_error_reason(e)}. Nothing was uploaded.\n"
@@ -310,6 +408,9 @@ def main(argv=None, youtube=None):
         if prev and job["thumbnail"] and prev.get("thumbnail_status") != "set":
             print("     Its thumbnail isn't set yet; retrying that.")
             thumbs.append((job, prev["video_id"]))
+
+    if sched and todo:
+        print_plan(assign_slots(todo, sched, channel, args.min_lead), sched)
 
     if args.dry_run:
         for job in todo:
