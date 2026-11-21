@@ -93,6 +93,33 @@ videos:
     thumbnail: "my clip thumb.jpg"   # optional .jpg/.png; next to the video, or under video_dir
 ```
 
+## Defaults for every video
+
+Put shared fields in a `defaults:` block and each video only needs `filename` and `title`:
+
+```yaml
+defaults:
+  keywords: "trains, railfan, railroad, Galesburg"
+  categoryId: "19"
+  description: |
+    Railfanning around Galesburg, Illinois.
+
+    #railfan #trains
+videos:
+  - filename: "A6 Departs 20260520.mov"
+    title: "BNSF Helps the California Zephyr Toward Chicago 20260520"
+    keywords: "BNSF, Amtrak, California Zephyr"   # added to the default tags
+  - filename: "BNSF 674 yard job 20260520.mov"
+    title: "BNSF 674 Sansa Fe Pulling a Yard Job 20260520"
+    description: |                                # replaces the default description
+      Ex-Santa Fe warbonnet BNSF 674 working the yard.
+```
+
+A video's own value replaces the default, except `keywords`: the video's tags are added after the
+default tags (repeats dropped), and the combined list must fit YouTube's 500-character limit.
+`defaults:` can set `description`, `keywords`, `categoryId`, `privacyStatus`, `language` and
+`madeForKids`; the rest are per-video. A misspelled top-level setting (like `default:`) is an error.
+
 Then:
 
 ```

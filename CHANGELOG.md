@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### New
+- `defaults:` block in `video_summary.yml`: shared description, keywords, category, privacy,
+  language and made-for-kids for every video. A video's own value wins; its keywords are added to
+  the default tags. Unknown top-level settings are now an error.
+
 ### Fixed
 - An entry that's already on the channel no longer blocks the batch because its old
   `publishAt` has passed. Publish times are now checked only for videos that will actually be

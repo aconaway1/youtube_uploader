@@ -10,6 +10,16 @@
 # a relative path is relative to this YAML file. Default: this file's folder.
 video_dir: "~/Library/CloudStorage/Dropbox/Video/Finals"
 
+# Optional: fields applied to every video below, so each video only needs
+# filename and title. A video's own value replaces the default, except
+# keywords: a video's own tags are added after the default tags.
+# Allowed here: description, keywords, categoryId, privacyStatus, language,
+# madeForKids.
+defaults:
+  keywords: "trains, railfan, railroad, Galesburg"
+  categoryId: "19"
+  language: "en"
+
 # Optional: schedule the videos below one per day. Each video without its own
 # publishAt gets the next day that has no Short already scheduled on the
 # channel (long-form videos don't block a day). Start defaults to tomorrow.
@@ -53,6 +63,6 @@ videos:
     skipSchedule: false              # true = don't give this one a schedule slot
                                      # (it keeps the privacyStatus above)
 
-  # A minimal entry:
+  # A minimal entry (gets everything else from defaults):
   - filename: "MARTA CQ400 Five Points 20260601.mov"
     title: "MARTA CQ400 New Railcar at Five Points 20260601"

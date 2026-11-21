@@ -643,8 +643,10 @@ def test_uploader_example_shows_every_field_and_is_valid():
     path = os.path.join(EXAMPLES, "video_summary.example.yml")
     assert UPLOADER_KEYS <= _keys_in_example(path)
     data = yt.load_yaml(path)
+    defaults, problems = uploader.check_defaults(data.get("defaults"))
+    assert problems == [] and defaults
     for vid in data["videos"]:
-        _, problems = uploader.build_job(vid, "/nonexistent")
+        _, problems = uploader.build_job(uploader.apply_defaults(vid, defaults), "/nonexistent")
         problems = [p for p in problems if "not found" not in p and "in the past" not in p]
         assert problems == []
 
@@ -1194,3 +1196,61 @@ def test_allowed_duplicate_with_past_time_is_an_error(workdir, capsys):
     assert uploader.main(["--vids", f, "--allow-duplicate", "a.mov",
                           "--log", str(workdir / "l.json")], youtube=fake) == 2
     assert "in the past" in capsys.readouterr().out and fake.videos().inserted == []
+
+
+# ---------------------------------------------------------------- defaults for every video
+
+def test_apply_defaults_override_and_tag_merge():
+    defaults = {"keywords": "trains, railfan, Galesburg", "categoryId": "19",
+                "description": "Default description"}
+    got = uploader.apply_defaults({"filename": "a.mov", "title": "A", "keywords": "BNSF, railfan",
+                                   "description": "Own"}, defaults)
+    assert got["keywords"] == ["trains", "railfan", "Galesburg", "BNSF"]   # merged, no dupes
+    assert got["description"] == "Own" and got["categoryId"] == "19"
+    plain = uploader.apply_defaults({"filename": "b.mov", "title": "B"}, defaults)
+    assert plain["keywords"] == ["trains", "railfan", "Galesburg"]
+    assert plain["description"] == "Default description"
+
+
+def test_defaults_in_uploads(workdir):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\n"
+                   "defaults:\n"
+                   "  keywords: trains, railfan\n"
+                   "  categoryId: '19'\n"
+                   "  description: |\n    Shot in Galesburg.\n\n    #railfan\n"
+                   "videos:\n"
+                   "  - {filename: a.mov, title: A}\n"
+                   "  - {filename: b.mov, title: B, keywords: BNSF, categoryId: '2'}\n")
+    fake = FakeYouTube(insert_results=[{"id": "1"}, {"id": "2"}])
+    assert uploader.main(["--vids", f, "--no-channel-check", "--log", str(workdir / "l.json")],
+                         youtube=fake) == 0
+    (_, a), (_, b) = fake.videos().inserted
+    assert a["snippet"]["tags"] == ["trains", "railfan"] and a["snippet"]["categoryId"] == "19"
+    assert a["snippet"]["description"] == "Shot in Galesburg.\n\n#railfan"
+    assert b["snippet"]["tags"] == ["trains", "railfan", "BNSF"] and b["snippet"]["categoryId"] == "2"
+
+
+def test_defaults_reject_per_video_fields(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\ndefaults:\n  title: Nope\n  thumbnail: t.jpg\n"
+                   "videos:\n  - {filename: a.mov, title: A}\n")
+    assert uploader.main(["--vids", f, "--dry-run", "--no-channel-check",
+                          "--log", str(workdir / "l.json")]) == 2
+    assert "defaults: can't set thumbnail, title" in capsys.readouterr().out
+
+
+def test_unknown_top_level_key_is_an_error(workdir, capsys):
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\ndefault:\n  keywords: x\n"
+                   "videos:\n  - {filename: a.mov, title: A}\n")
+    assert uploader.main(["--vids", f, "--dry-run", "--no-channel-check",
+                          "--log", str(workdir / "l.json")]) == 2
+    out = capsys.readouterr().out
+    assert "unknown setting(s) at the top" in out and ": default (expected" in out
+
+
+def test_default_tags_count_toward_500_limit(workdir, capsys):
+    long_tags = ", ".join(f"tag{i:03d}word" for i in range(50))  # 50 * 10 + 49 commas = 549
+    f = write_yaml(workdir / "v.yml", f"video_dir: vids\ndefaults:\n  keywords: '{long_tags}'\n"
+                   "videos:\n  - {filename: a.mov, title: A, keywords: extra}\n")
+    assert uploader.main(["--vids", f, "--dry-run", "--no-channel-check",
+                          "--log", str(workdir / "l.json")]) == 2
+    assert "tags total" in capsys.readouterr().out

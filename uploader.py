@@ -144,6 +144,43 @@ def build_job(vid, video_dir, min_lead=yt.DEFAULT_MIN_LEAD_MINUTES, finder=None)
 # Scheduling: one Short per open day
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Defaults for every video
+# --------------------------------------------------------------------------
+
+# Fields a `defaults:` block may set. filename, title, publishAt, recordingDate,
+# thumbnail and skipSchedule are per-video only.
+DEFAULTABLE = ("description", "keywords", "categoryId", "privacyStatus", "language", "madeForKids")
+
+
+def check_defaults(defaults):
+    if defaults is None:
+        return {}, []
+    if not isinstance(defaults, dict):
+        return {}, ["defaults: must be a block of fields, e.g.  defaults: {keywords: \"trains\"}"]
+    unknown = sorted(set(defaults) - set(DEFAULTABLE))
+    if unknown:
+        return {}, [f"defaults: can't set {', '.join(unknown)} (only {', '.join(DEFAULTABLE)})"]
+    return defaults, []
+
+
+def apply_defaults(vid, defaults):
+    """The video's own fields win, except keywords: default tags come first and
+    the video's own tags are added after them (duplicates dropped)."""
+    if not defaults or not isinstance(vid, dict):
+        return vid
+    merged = {k: v for k, v in defaults.items() if k != "keywords"}
+    merged.update(vid)
+    if "keywords" in defaults:
+        tags, seen = [], set()
+        for t in yt.parse_tags(defaults["keywords"]) + yt.parse_tags(vid.get("keywords")):
+            if t.casefold() not in seen:
+                seen.add(t.casefold())
+                tags.append(t)
+        merged["keywords"] = tags
+    return merged
+
+
 def parse_schedule(cfg, today=None):
     """The YAML `schedule:` block -> ({'time': time, 'start': date}, problems)."""
     if cfg is None:
@@ -317,7 +354,14 @@ def main(argv=None, youtube=None):
     if not os.path.isabs(video_dir):
         video_dir = os.path.join(base, video_dir)
 
+    defaults, default_problems = check_defaults(data.get("defaults"))
     sched, sched_problems = parse_schedule(data.get("schedule"))
+    sched_problems += default_problems
+    unknown_top = sorted(set(data) - {"video_dir", "defaults", "schedule", "videos"})
+    if unknown_top:
+        sched_problems.append(f"unknown setting(s) at the top of {args.vids}: "
+                              f"{', '.join(unknown_top)} (expected video_dir, defaults, "
+                              "schedule, videos)")
     for p in sched_problems:
         print(f"ERROR {p}")
     if sched and args.no_channel_check:
@@ -328,7 +372,7 @@ def main(argv=None, youtube=None):
     finder = yt.FileFinder(video_dir)  # lists the folder tree once, only if a search is needed
     jobs, bad = [], len(sched_problems)
     for i, vid in enumerate(data["videos"], 1):
-        job, problems = build_job(vid, video_dir, args.min_lead, finder)
+        job, problems = build_job(apply_defaults(vid, defaults), video_dir, args.min_lead, finder)
         label = job["filename"] if job else f"entry {i}"
         for p in problems:
             print(f"ERROR {label}: {p}")
