@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4 (2026-11-22)
 
 ### New
 - Duplicate check also matches by exact file size, which catches a file re-uploaded under a new
