@@ -501,13 +501,18 @@ def channel_videos(youtube):
         return []
     uploads = channels[0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
-    videos, token = [], None
+    videos, seen, token = [], set(), None
     while True:
         resp = youtube.playlistItems().list(part="snippet", playlistId=uploads,
                                             maxResults=50, pageToken=token).execute()
         for item in resp.get("items", []):
             sn = item["snippet"]
-            videos.append({"id": sn["resourceId"]["videoId"], "title": sn.get("title", "")})
+            vid = sn["resourceId"]["videoId"]
+            # Paging through a big uploads list can return a video more than once.
+            if vid in seen:
+                continue
+            seen.add(vid)
+            videos.append({"id": vid, "title": sn.get("title", "")})
         token = resp.get("nextPageToken")
         if not token:
             break

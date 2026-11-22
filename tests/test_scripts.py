@@ -58,6 +58,12 @@ class FakeVideos:
         self.list_calls += 1
         items = []
         for vid in id.split(","):
+            if "statistics" in part:
+                if vid in self.files:
+                    v = self.files[vid]
+                    items.append({"id": vid, "statistics": {"viewCount": str(v.get("views", 0))},
+                                  "snippet": {"publishedAt": v.get("published")}})
+                continue
             if "fileDetails" in part:
                 if vid in self.files:
                     v = self.files[vid]
@@ -1630,3 +1636,48 @@ def test_channel_videos_reads_file_size():
                 {"id": "B", "title": "u", "fileName": "b.mov"}]
     got = {v["id"]: v for v in yt.channel_videos(FakeYouTube(existing=existing))}
     assert got["A"]["fileSize"] == 328170768 and got["B"]["fileSize"] is None
+
+
+def test_channel_videos_drops_repeats_from_paging():
+    existing = [{"id": "A", "title": "a", "fileName": "a.mov", "fileSize": 10},
+                {"id": "B", "title": "b", "fileName": "b.mov", "fileSize": 20},
+                {"id": "A", "title": "a", "fileName": "a.mov", "fileSize": 10},   # repeated on page 2
+                {"id": "C", "title": "c", "fileName": "c.mov", "fileSize": 30}]
+    got = yt.channel_videos(FakeYouTube(existing=existing))
+    assert [v["id"] for v in got] == ["A", "B", "C"]
+
+
+
+# ---------------------------------------------------------------- find_duplicates.py
+
+import find_duplicates  # noqa: E402
+
+
+def test_find_duplicates_groups_and_keeps_most_viewed(capsys):
+    existing = [
+        {"id": "OLD", "title": "AMTK 301 Takes Ill Zephyr", "fileSize": 328170768, "views": 900,
+         "published": "2026-10-27T12:00:00Z"},
+        {"id": "NEW", "title": "AMTK 301 Leads the Illinois Zephyr", "fileSize": 328170768, "views": 249,
+         "published": "2026-11-22T13:15:00Z"},
+        {"id": "M1", "title": "Metrolinks A", "fileSize": 5, "views": 10, "published": "2026-05-14T12:00:00Z"},
+        {"id": "M2", "title": "Metrolinks B", "fileSize": 5, "views": 10, "published": "2026-05-13T12:00:00Z"},
+        {"id": "M3", "title": "Metrolinks C", "fileSize": 5, "views": 50, "published": "2026-05-15T12:00:00Z"},
+        {"id": "SOLO", "title": "Unique", "fileSize": 7, "views": 1},
+    ]
+    existing.append(dict(existing[0]))   # the API repeating a video while paging
+    fake = FakeYouTube(existing=existing)
+    assert find_duplicates.main([], youtube=fake) == 0
+    out = capsys.readouterr().out
+    assert "2 groups of identical files, 3 extra copies" in out
+    assert "KEEP    OLD" in out and "delete  NEW" in out
+    assert "KEEP    M3" in out and "delete  M2" in out and "delete  M1" in out
+    assert out.index("delete  M2") < out.index("delete  M1")          # tie: earlier first
+    assert "https://studio.youtube.com/video/NEW/edit" in out
+    assert "SOLO" not in out
+    assert fake.videos().inserted == [] and fake.videos().updated == []
+
+
+def test_find_duplicates_none(capsys):
+    fake = FakeYouTube(existing=[{"id": "A", "title": "a", "fileSize": 1}, {"id": "B", "title": "b", "fileSize": 2}])
+    assert find_duplicates.main([], youtube=fake) == 0
+    assert "No videos on the channel share an identical file." in capsys.readouterr().out

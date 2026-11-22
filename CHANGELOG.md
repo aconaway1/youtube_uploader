@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### New
+- `find_duplicates.py`: read-only list of videos on the channel that are the same file uploaded
+  more than once, with view counts, the copy to keep, and Studio links for the rest.
+
+### Fixed
+- The channel's video list could include the same video twice (the uploads list repeats some
+  videos while paging). That inflated the video count and could double-list scheduled videos.
+
 ## v0.4 (2026-11-22)
 
 ### New

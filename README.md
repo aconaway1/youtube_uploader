@@ -17,6 +17,7 @@ Three scripts that share one sign-in, plus one that never touches YouTube:
 - `updater.py` changes the details of videos that are already on YouTube, such as a title,
   description, tags, thumbnail, or the publish date and time.
 - `upcoming.py` shows what's scheduled to go public, day by day, and which days are open.
+- `find_duplicates.py` lists videos already on the channel that are the same file uploaded twice.
 - `mark_published.py` (macOS) tags uploaded files in Finder. It only reads the upload log.
 
 # Setup
@@ -272,6 +273,24 @@ Scheduled to go public, Sat Nov 21 through Fri Dec 4:
   Tue Nov 24  open
   ...
 2 Shorts scheduled, 12 open days.
+```
+
+## Finding duplicates already on the channel: find_duplicates.py
+
+```
+python find_duplicates.py
+```
+
+Groups videos whose uploaded files are byte-for-byte the same size, which is the same file uploaded
+more than once, whatever the titles say. In each group the copy with the most views is marked `KEEP`
+(ties go to the one published first) and the rest get a Studio link so you can delete them there.
+It only reads; it never deletes anything. About 1 quota unit per 25 videos on the channel.
+
+```
+328,170,768 bytes
+  KEEP    uOYYEDHkYdg    1,210 views  Oct 27, 2026  "AMTK 301 Takes Ill Zephyr Toward Quincy 20261022 ..."
+  delete  2sRmpN__2TI      249 views  Nov 22, 2026  "AMTK 301 Leads the Illinois Zephyr Out of Galesburg ..."
+          https://studio.youtube.com/video/2sRmpN__2TI/edit
 ```
 
 # The Updater
