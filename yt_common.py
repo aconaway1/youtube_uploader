@@ -489,7 +489,7 @@ def looks_like_short(item):
 
 def channel_videos(youtube):
     """Every video on the signed-in channel:
-    [{id, title, fileName, isShort, privacyStatus, publishAt, publishedAt}].
+    [{id, title, fileName, fileSize, isShort, privacyStatus, publishAt, publishedAt}].
 
     fileName is the name of the file originally uploaded (owner-only data;
     empty for some very old videos). publishAt is set for scheduled videos.
@@ -526,6 +526,12 @@ def channel_videos(youtube):
                 continue
             status = item.get("status", {})
             v["fileName"] = item.get("fileDetails", {}).get("fileName", "")
+            # The exact byte count of the uploaded file. Unlike fileName (which YouTube
+            # leaves empty for API and app uploads), it's recorded for every upload.
+            try:
+                v["fileSize"] = int(item.get("fileDetails", {}).get("fileSize") or 0) or None
+            except (TypeError, ValueError):
+                v["fileSize"] = None
             v["isShort"] = looks_like_short(item)
             v["privacyStatus"] = status.get("privacyStatus", "")
             v["publishAt"] = status.get("publishAt") if status.get("privacyStatus") == "private" else None
@@ -556,22 +562,33 @@ def local_date(value):
 
 
 class DuplicateIndex:
-    """Look up existing channel videos by original filename or title."""
+    """Look up existing channel videos by exact file size, original filename or title."""
 
     def __init__(self, videos):
-        self.by_file, self.by_title = {}, {}
+        self.by_file, self.by_title, self.by_size = {}, {}, {}
         self.ids = {v["id"] for v in videos}
         for v in videos:
+            if v.get("fileSize"):
+                self.by_size.setdefault(v["fileSize"], []).append(v)
             if v.get("fileName"):
                 self.by_file.setdefault(os.path.basename(v["fileName"]).casefold(), []).append(v)
             if v.get("title"):
                 self.by_title.setdefault(normalize_title(v["title"]), []).append(v)
         self.count = len(videos)
 
-    def matches(self, filename, title):
-        """Reasons this upload looks like a duplicate, e.g. ['same file name as abc123 "Title"']."""
+    def matches(self, filename, title, size=None):
+        """Reasons this upload looks like a duplicate, e.g. ['same file name as abc123 "Title"'].
+
+        size is the local file's byte count: the same file uploaded again has
+        exactly the same size on YouTube, whatever its name or title."""
         reasons, seen = [], set()
+        for v in self.by_size.get(size, []) if size else []:
+            seen.add(v["id"])
+            reasons.append(f"same file (identical size, {size:,} bytes) as "
+                           f"https://youtu.be/{v['id']} \"{v['title']}\"")
         for v in self.by_file.get(os.path.basename(filename).casefold(), []):
+            if v["id"] in seen:
+                continue
             seen.add(v["id"])
             reasons.append(f"same file name as https://youtu.be/{v['id']} \"{v['title']}\"")
         for v in self.by_title.get(normalize_title(title), []):

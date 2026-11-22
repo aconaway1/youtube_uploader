@@ -146,9 +146,11 @@ What it does:
   with the video ID. Running the same YAML again skips those files, so a run that fails partway
   can just be rerun.
 - **Checks the channel for duplicates.** Before uploading, it reads your channel's video list and
-  skips any file whose original file name or title (ignoring case and spacing) matches a video
-  already there, including ones uploaded by hand in Studio. Skipped files are listed with a link to
-  the matching video; the rest of the batch still uploads.
+  skips any file that matches a video already there by **exact file size** (the same file
+  re-uploaded under a new name and title), **original file name**, or **title** (ignoring case and
+  spacing). YouTube only keeps the original file name for uploads made on the Studio website, not
+  for API or app uploads, so the size match is the one that catches those. Skipped files are listed
+  with a link to the matching video; the rest of the batch still uploads.
   - `--allow-duplicate "file.mov"` uploads that file anyway (repeat for more files).
   - `--force` uploads every file regardless.
   - `--no-channel-check` skips the channel check (the upload log is still checked); handy for a

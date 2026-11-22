@@ -62,7 +62,8 @@ class FakeVideos:
                 if vid in self.files:
                     v = self.files[vid]
                     item = {"id": vid,
-                            "fileDetails": {"fileName": v.get("fileName", "")},
+                            "fileDetails": {"fileName": v.get("fileName", ""),
+                                            **({"fileSize": str(v["fileSize"])} if v.get("fileSize") else {})},
                             "contentDetails": {"duration": v.get("duration", "PT45S")},
                             "status": {"privacyStatus": v.get("privacyStatus", "public")}}
                     if v.get("publishAt"):
@@ -1583,3 +1584,49 @@ def test_updater_failed_playlist_add_counts_as_failure(tmp_path, capsys):
                        playlist_results=[http_error(403, "playlistItemsNotAccessible")])
     assert updater.main(["--vids", f], youtube=fake) == 1
     assert "couldn't add to playlist" in capsys.readouterr().out
+
+
+
+# ---------------------------------------------------------------- exact file size
+
+def test_same_file_with_new_name_and_title_is_caught_by_size(workdir, capsys):
+    """The AMTK 301 case: uploaded before via the API/app (no fileName recorded) with
+    another title; same bytes now under a new name and title."""
+    (workdir / "vids" / "AMTK 301 Departs GBB 20261022.mov").write_bytes(b"x" * 4321)
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n"
+                   "  - {filename: AMTK 301 Departs GBB 20261022.mov,"
+                   " title: AMTK 301 Leads the Illinois Zephyr Out of Galesburg 20261022}\n")
+    existing = [{"id": "uOYYEDHkYdg", "title": "AMTK 301 Takes Ill Zephyr Toward Quincy 20261022",
+                 "fileName": "", "fileSize": 4321}]
+    fake = FakeYouTube(existing=existing, insert_results=[{"id": "NEW"}])
+    assert uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake) == 0
+    out = capsys.readouterr().out
+    assert "DUPLICATE AMTK 301 Departs GBB 20261022.mov: skipped" in out
+    assert "same file (identical size, 4,321 bytes) as https://youtu.be/uOYYEDHkYdg" in out
+    assert fake.videos().inserted == []
+
+
+def test_different_size_same_night_is_not_a_duplicate(workdir):
+    (workdir / "vids" / "a.mov").write_bytes(b"x" * 100)
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n  - {filename: a.mov, title: New one}\n")
+    existing = [{"id": "O", "title": "Other 20261022", "fileName": "", "fileSize": 101}]
+    fake = FakeYouTube(existing=existing, insert_results=[{"id": "NEW"}])
+    assert uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake) == 0
+    assert len(fake.videos().inserted) == 1
+
+
+def test_size_and_name_match_reported_once(workdir, capsys):
+    (workdir / "vids" / "a.mov").write_bytes(b"x" * 50)
+    f = write_yaml(workdir / "v.yml", "video_dir: vids\nvideos:\n  - {filename: a.mov, title: A}\n")
+    existing = [{"id": "O", "title": "A", "fileName": "a.mov", "fileSize": 50}]
+    fake = FakeYouTube(existing=existing)
+    uploader.main(["--vids", f, "--log", str(workdir / "l.json")], youtube=fake)
+    out = capsys.readouterr().out
+    assert out.count("https://youtu.be/O") == 1 and "identical size" in out
+
+
+def test_channel_videos_reads_file_size():
+    existing = [{"id": "A", "title": "t", "fileName": "", "fileSize": 328170768},
+                {"id": "B", "title": "u", "fileName": "b.mov"}]
+    got = {v["id"]: v for v in yt.channel_videos(FakeYouTube(existing=existing))}
+    assert got["A"]["fileSize"] == 328170768 and got["B"]["fileSize"] is None

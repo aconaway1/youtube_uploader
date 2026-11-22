@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### New
+- Duplicate check also matches by exact file size, which catches a file re-uploaded under a new
+  name and title. YouTube leaves the original file name empty for API and app uploads, so name
+  matching alone missed those.
 - Tests run on GitHub Actions for every push: Ubuntu (Python 3.10, 3.12, 3.13) and macOS, which
   also checks real Finder tags.
 - `playlists:` in the updater: adds existing videos to playlists, skipping ones they're already in.

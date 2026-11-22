@@ -504,7 +504,8 @@ def main(argv=None, youtube=None):
             reasons.append(f"already uploaded by this tool as https://youtu.be/{prev['video_id']} "
                            f"on {prev['uploaded_at'][:10]}")
         if index:
-            reasons += [r for r in index.matches(job["filename"], job["body"]["snippet"]["title"])
+            reasons += [r for r in index.matches(job["filename"], job["body"]["snippet"]["title"],
+                                                 size=os.path.getsize(job["path"]))
                         if not prev or prev["video_id"] not in r]
 
         if not reasons:
